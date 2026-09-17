@@ -1,0 +1,6 @@
+MetaTrader5>=5.0.6180
+pandas>=2.2.0
+numpy>=1.26.4
+python-dotenv>=1.0.1
+pytz>=2024.1
+requests>=2.31.0
