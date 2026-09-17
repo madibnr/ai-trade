@@ -340,3 +340,85 @@ def close_position(ticket):
         
     logger.info(f"[SUCCESS] CP Berhasil! Tiket {ticket} ditutup pada harga {result.price}. Volume: {pos.volume}")
     return True
+
+def check_and_apply_bep(symbol: str) -> None:
+    """
+    Memeriksa posisi aktif bot dan menggeser Stop Loss ke level Break-Even (Lock Profit)
+    secara otomatis jika floating profit mencapai ambang batas BEP_TRIGGER_PROFIT_IDR.
+    Mendukung deteksi otomatis mata uang akun (IDR vs USD) dan validasi ketat harga pasar.
+    """
+    if not settings.ENABLE_AUTO_BEP:
+        return
+
+    positions = get_active_positions(symbol)
+    if not positions:
+        return
+
+    symbol_info = get_symbol_info(symbol)
+    if not symbol_info:
+        return
+
+    tick = get_current_tick(symbol)
+    if not tick:
+        return
+
+    # Deteksi mata uang akun MT5 secara dinamis
+    account = mt5.account_info()
+    is_idr_account = False
+    if account and getattr(account, "currency", "").upper() == "IDR":
+        is_idr_account = True
+
+    stops_level_dist = max(symbol_info.trade_stops_level * symbol_info.point, symbol_info.point)
+
+    for pos in positions:
+        # Hitung floating profit nominal sesuai mata uang akun
+        if is_idr_account:
+            floating_profit_idr = pos.profit
+            profit_display_str = f"Rp{floating_profit_idr:,.0f}"
+        else:
+            floating_profit_idr = pos.profit * float(getattr(settings, "KURS_USD_IDR", 16000.0))
+            profit_display_str = f"Rp{floating_profit_idr:,.0f} (${pos.profit:.2f})"
+
+        # Cek apakah sudah menyentuh ambang profit pemicu BEP (misal: Rp20.000)
+        if floating_profit_idr >= settings.BEP_TRIGGER_PROFIT_IDR:
+            current_sl = pos.sl
+            price_open = pos.price_open
+            pos_type = pos.type # 0 = BUY, 1 = SELL
+
+            new_sl = 0.0
+            should_modify = False
+
+            if pos_type == mt5.ORDER_TYPE_BUY:
+                target_sl = round(price_open + settings.BEP_LOCK_OFFSET_PRICE, symbol_info.digits)
+                # Syarat BUY: Harga Bid pasar harus sudah berada AMAN di atas target_sl plus stop distance,
+                # dan SL saat ini masih berada di bawah target_sl (belum dimodifikasi).
+                if (tick.bid - target_sl) >= stops_level_dist and current_sl < target_sl:
+                    new_sl = target_sl
+                    should_modify = True
+
+            elif pos_type == mt5.ORDER_TYPE_SELL:
+                target_sl = round(price_open - settings.BEP_LOCK_OFFSET_PRICE, symbol_info.digits)
+                # Syarat SELL: Harga Ask pasar harus sudah berada AMAN di bawah target_sl minus stop distance,
+                # dan SL saat ini masih berada di atas target_sl atau belum ada SL (0.0).
+                if (target_sl - tick.ask) >= stops_level_dist and (current_sl > target_sl or current_sl == 0.0):
+                    new_sl = target_sl
+                    should_modify = True
+
+            if should_modify and new_sl > 0.0:
+                request = {
+                    "action": mt5.TRADE_ACTION_SLTP,
+                    "position": pos.ticket,
+                    "symbol": pos.symbol,
+                    "sl": new_sl,
+                    "tp": pos.tp
+                }
+                result = mt5.order_send(request)
+                if result is not None and result.retcode == mt5.TRADE_RETCODE_DONE:
+                    logger.info(
+                        f"[BEP TRIGGERED] Tiket {pos.ticket} berhasil diproteksi! "
+                        f"Floating Profit: {profit_display_str} | "
+                        f"SL digeser ke {new_sl:.2f} (Locked Profit)."
+                    )
+                else:
+                    err_msg = f"Retcode: {result.retcode} - {result.comment}" if result else "No response"
+                    logger.warning(f"[WARNING] Gagal memodifikasi BEP untuk tiket {pos.ticket}. {err_msg}")
