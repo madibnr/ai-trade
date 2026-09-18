@@ -17,3 +17,6 @@ logs/*.log
 # IDE
 .idea/
 .vscode/
+
+# Archives
+*.zip

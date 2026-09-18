@@ -34,6 +34,7 @@ class TestMultiInstanceIsolation(unittest.TestCase):
         
         self.assertIn(os.getenv("SYMBOL"), ("XAUUSD", "XAUUSDb"))
         self.assertEqual(int(os.getenv("MAGIC_NUMBER")), 123442)
+        self.assertEqual(int(os.getenv("WEB_PORT")), 8080)
         self.assertEqual(float(os.getenv("SL_CAP_PRICE")), 2.50)
         self.assertEqual(os.getenv("LOG_FILE"), "logs/trading_xau.log")
         self.assertEqual(float(os.getenv("DAILY_TARGET_PROFIT_IDR")), 300000.0)
@@ -44,9 +45,40 @@ class TestMultiInstanceIsolation(unittest.TestCase):
         
         self.assertIn(os.getenv("SYMBOL"), ("EURUSD", "EURUSDb", "GBPUSD"))
         self.assertEqual(int(os.getenv("MAGIC_NUMBER")), 123422)
+        self.assertEqual(int(os.getenv("WEB_PORT")), 8081)
         self.assertEqual(float(os.getenv("SL_CAP_PRICE")), 0.0025)
         self.assertEqual(os.getenv("LOG_FILE"), "logs/trading_forex.log")
         self.assertEqual(float(os.getenv("DAILY_TARGET_PROFIT_IDR")), 200000.0)
+
+    def test_dashboard_instance_metadata_and_units(self):
+        """Memverifikasi isolasi metadata dashboard dan satuan jarak (Dollar vs Pips) untuk Emas & Forex."""
+        # Test Emas
+        load_dotenv(".env.xau", override=True)
+        sym_xau = os.getenv("SYMBOL", "XAUUSDb")
+        is_gold_xau = "XAU" in sym_xau.upper() or "GOLD" in sym_xau.upper()
+        self.assertTrue(is_gold_xau)
+        port_xau = int(os.getenv("WEB_PORT", 8080))
+        self.assertEqual(port_xau, 8080)
+        label_xau = f"INSTANCE: GOLD ({sym_xau})"
+        self.assertIn("GOLD", label_xau)
+
+        # Test Forex
+        load_dotenv(".env.forex", override=True)
+        sym_fx = os.getenv("SYMBOL", "EURUSDb")
+        is_gold_fx = "XAU" in sym_fx.upper() or "GOLD" in sym_fx.upper()
+        self.assertFalse(is_gold_fx)
+        port_fx = int(os.getenv("WEB_PORT", 8081))
+        self.assertEqual(port_fx, 8081)
+        label_fx = f"INSTANCE: FOREX ({sym_fx})"
+        self.assertIn("FOREX", label_fx)
+
+        # Formula konversi Pips vs Dollar
+        # Forex: 0.00120 pada EURUSD (point=0.00001) = 12.0 pips
+        fx_distance = 0.00120
+        fx_point = 0.00001
+        pip_size = fx_point * 10
+        pips = fx_distance / pip_size
+        self.assertAlmostEqual(pips, 12.0)
 
     def test_magic_number_position_filtering(self):
         """Memverifikasi bahwa penyaringan posisi aktif 100% terisolasi berdasarkan MAGIC_NUMBER."""

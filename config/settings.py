@@ -2,7 +2,11 @@ import os
 from dotenv import load_dotenv
 
 # Load environment variables
-load_dotenv()
+env_file = os.getenv("ENV_FILE", ".env")
+if os.path.exists(env_file):
+    load_dotenv(env_file)
+else:
+    load_dotenv()
 
 def get_env_float(key: str, default: float) -> float:
     val = os.getenv(key)

@@ -21,6 +21,8 @@ class TestWebDashboard(unittest.TestCase):
         self.assertIn("account", state)
         self.assertIn("market", state)
         self.assertIn("ai_status", state)
+        self.assertIn("trade_setup", state["ai_status"])
+        self.assertIn("detailed_analysis", state["ai_status"])
         self.assertIn("active_position", state)
         self.assertIn("active_trigger", state)
         self.assertIn("recent_events", state)

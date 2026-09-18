@@ -315,6 +315,7 @@ def get_ai_decision(market_input: Any, tick: Any, active_positions: list) -> Dic
         "action": "HOLD",
         "signal": "HOLD",
         "confidence": 0.0,
+        "execution_type": "MARKET_ORDER",
         "primary_bias": "NEUTRAL",
         "macro_bias": "NEUTRAL",
         "m15_bias": "NEUTRAL",
@@ -324,6 +325,21 @@ def get_ai_decision(market_input: Any, tick: Any, active_positions: list) -> Dic
             "primary": primary_tf,
             "macro": macro_tf
         },
+        "trade_setup": {
+            "has_setup": False,
+            "op_price": 0.0,
+            "sl_price": 0.0,
+            "tp_price": 0.0,
+            "rr_ratio": 0.0,
+            "risk_usd": 0.0,
+            "reward_usd": 0.0
+        },
+        "detailed_analysis": {
+            "primary_structure": "Pasar sedang dalam kondisi konsolidasi / belum ada setup valid.",
+            "trigger_reason": "Tidak ada konfirmasi dorongan lilin mikro yang searah.",
+            "exit_plan": "Menunggu konfirmasi struktur Primary TF sebelum merencanakan level SL/TP."
+        },
+        "summary_reason": "Menunggu setup konfirmasi tren Primary TF.",
         "entry_price": 0.0,
         "trigger_price": 0.0,
         "sl_price": 0.0,
@@ -336,7 +352,7 @@ def get_ai_decision(market_input: Any, tick: Any, active_positions: list) -> Dic
         "sl_distance_usd": 0.0,
         "tp_distance_usd": 0.0,
         "risk_reward_ratio": 0.0,
-        "reason": "Fallback default karena error atau sinyal lemah"
+        "reason": "Menunggu setup konfirmasi tren Primary TF."
     }
 
     context_prompt = build_prompt_context(market_input, tick, active_positions)
@@ -365,53 +381,55 @@ Jika pada blok [STATUS POSISI AKTIF SAAT INI] terdapat posisi terbuka, evaluasi 
    - Wajib menyertakan field: "new_sl" dan "new_tp". new_sl DILARANG KERAS memperlebar risiko (BUY: new_sl >= SL lama; SELL: new_sl <= SL lama).
 3. CLOSE: Eksekusi penutupan posisi darurat seketika jika struktur {primary_tf} atau {base_tf} menunjukkan pola pembalikan arah ekstrem (reversal) yang mengancam akun.
 
-[PENCARIAN PELUANG MASUK BARU - AI COMMANDER & TRIGGER PLAN (JIKA FLAT / TIDAK ADA POSISI)]
-Jika saat ini status adalah FLAT (tidak ada posisi terbuka), putuskan salah satu aksi berikut:
-1. BUY / SELL (Eksekusi Instan di Detik ke-0):
-   - Gunakan HANYA JIKA {primary_tf} terkonfirmasi searah dan momentum lilin {base_tf} sudah meledak breakout saat lilin dibuka.
-2. PENDING_BUY (Rencana Trigger Breakout Ke Atas):
-   - Jika {primary_tf} Bullish kuat, pasang jebakan masuk jika harga {base_tf} menembus level tertentu (High lilin sebelumnya). Wajib sertakan: "trigger_price" (> Ask), "sl_price", "tp_price", "expire_seconds" (default 60).
-3. PENDING_SELL (Rencana Trigger Breakdown Ke Bawah):
-   - Jika {primary_tf} Bearish kuat, pasang jebakan masuk jika harga {base_tf} menembus level tertentu (Low lilin sebelumnya). Wajib sertakan: "trigger_price" (< Bid), "sl_price", "tp_price", "expire_seconds" (default 60).
-4. HOLD:
-   - Jika {primary_tf} dalam kondisi konsolidasi ketat (Neutral) dan {base_tf} tidak memiliki arah momentum yang jelas.
+[PENCARIAN PELUANG MASUK BARU - REKOMENDASI POSISI TRADING MURNI (JIKA FLAT / TIDAK ADA POSISI)]
+Jika saat ini status adalah FLAT (tidak ada posisi terbuka), putuskan rekomendasi posisi trading murni:
+1. BUY / SELL (Eksekusi Instan MARKET_ORDER atau BREAKOUT_TRIGGER):
+   - Jika {primary_tf} Bullish kuat dan dikonfirmasi oleh {base_tf} -> action: "BUY".
+   - Jika {primary_tf} Bearish kuat dan dikonfirmasi oleh {base_tf} -> action: "SELL".
+   - execution_type: "MARKET_ORDER" (jika momentum langsung valid saat lilin dibuka) atau "BREAKOUT_TRIGGER" (jika memasang trigger breakout level tertentu).
+   - Wajib mengisi objek "trade_setup" lengkap dengan perhitungan titik OP, SL, TP, rasio R:R, serta risiko/reward USD.
+2. HOLD:
+   - Jika tren Primary TF {primary_tf} tidak jelas, berkonsolidasi, atau sideways: Aksi WAJIB "HOLD" dan kosongkan trade_setup (has_setup: false).
 
 [ATURAN KUANTITATIF SL & TP BERBASIS ATR {base_tf} (TIDAK BISA DITAWAR)]
-1. Kalkulasi SL Berdasarkan Volatilitas {base_tf} (Bukan {primary_tf} / {macro_tf}):
-   - Untuk XAUUSD: Jarak SL WAJIB berkisar antara $1.80 hingga $2.50 dari harga Entry/Trigger (skala ATR {base_tf}). DILARANG KERAS mengambil level swing {primary_tf} yang berjarak >$3.00!
-   - Untuk Forex Majors (EURUSD/GBPUSD): Jarak SL berkisar 4 – 7 pips (0.0004 – 0.0007).
-2. Kewajiban Rasio Risk-to-Reward (R:R Minimal 1:1.5 hingga 1:2.0):
-   - Jarak TP DILARANG KERAS lebih kecil daripada 1.5x jarak SL! (DILARANG R:R < 1:1.5).
-   - Rumus Jarak TP: Minimal 1.5x hingga 2.0x dari jarak SL (tp_distance >= sl_distance * 1.5).
-   - Target TP harus mempertimbangkan level support/resistance atau EMA {primary_tf}/{macro_tf} terdekat sebagai pembatas logis.
-3. Validasi Stop Level Broker:
+1. Titik OP (op_price): Estimasi harga entry saat ini (Ask untuk BUY, Bid untuk SELL).
+2. Level Stop Loss (sl_price):
+   - Wajib berkisar antara 1.5x hingga 2.0x nilai ATR {base_tf} dari harga OP. DILARANG menggunakan swing structure {primary_tf}/{macro_tf} yang berjarak > $2.50 pada Emas atau > 25 pips pada Forex!
+   - Untuk BUY: sl_price < op_price. Untuk SELL: sl_price > op_price.
+3. Level Take Profit (tp_price):
+   - Rasio Risk-to-Reward (R:R) MINIMAL 1:1.5 hingga 1:2.0! (Jarak TP wajib minimal 1.5x lebih besar dari jarak SL).
+   - DILARANG KERAS R:R < 1:1.5. Target TP harus ditempatkan pada level likuiditas / S&R mayor terdekat yang logis.
+   - Untuk BUY: tp_price > op_price. Untuk SELL: tp_price < op_price.
+4. Validasi Stop Level Broker:
    - Jarak SL dan TP terhadap harga pasar saat ini (Ask/Bid) wajib menghormati batas minimal broker (Min Stop Broker).
-4. Batas Logis Harga & Format Angka:
-   - Jika "BUY" / "PENDING_BUY" : sl_price < entry_price/trigger_price < tp_price
-   - Jika "SELL" / "PENDING_SELL": sl_price > entry_price/trigger_price > tp_price
-   - Seluruh nilai harga entry_sl, entry_tp, new_sl, new_tp, trigger_price wajib berupa angka harga absolut yang presisi sesuai jumlah digit desimal instrumen target.
+5. Format Angka Harga:
+   - Seluruh nilai harga op_price, sl_price, tp_price, new_sl, new_tp, trigger_price wajib berupa angka harga absolut yang presisi sesuai jumlah digit desimal instrumen target.
 
 INSTRUKSI FORMAT OUTPUT (STRICT JSON ONLY):
 HANYA kembalikan teks raw JSON valid tanpa tambahan markdown ```json ... ``` atau teks pengantar apa pun.
 Format JSON Output Wajib:
 {{
-  "action": "BUY" | "SELL" | "HOLD" | "MODIFY" | "CLOSE" | "PENDING_BUY" | "PENDING_SELL",
+  "action": "BUY" | "SELL" | "HOLD" | "MODIFY" | "CLOSE",
   "confidence": <float 0.0 - 1.0>,
+  "execution_type": "MARKET_ORDER" | "BREAKOUT_TRIGGER",
   "primary_bias": "BULLISH" | "BEARISH" | "NEUTRAL",
   "macro_bias": "BULLISH" | "BEARISH" | "NEUTRAL",
-  "entry_price": <float>,
-  "trigger_price": <float>,
-  "entry_sl": <float>,
-  "entry_tp": <float>,
-  "sl_price": <float>,
-  "tp_price": <float>,
-  "new_sl": <float>,
-  "new_tp": <float>,
-  "expire_seconds": <float default 60.0>,
-  "sl_distance_usd": <float>,
-  "tp_distance_usd": <float>,
-  "risk_reward_ratio": <float>,
-  "reason": "<Alasan taktis berbasis Primary {primary_tf} dan konfirmasi {base_tf}>"
+  "trade_setup": {{
+    "op_price": <float estimasi titik Open Position>,
+    "sl_price": <float level Cut Loss / Stop Loss>,
+    "tp_price": <float level Take Profit utama>,
+    "rr_ratio": <float rasio R:R wajib >= 1.5>,
+    "risk_usd": <float jarak risiko per 0.01 lot>,
+    "reward_usd": <float potensi reward per 0.01 lot>
+  }},
+  "detailed_analysis": {{
+    "primary_structure": "<Analisis struktur tren Primary TF {primary_tf} & Macro TF {macro_tf}>",
+    "trigger_reason": "<Konfirmasi lilin penutupan {base_tf} & indikator>",
+    "exit_plan": "<Alasan penempatan SL dan TP pada level support/resistance/likuiditas>"
+  }},
+  "summary_reason": "<Ringkasan alasan singkat 1-2 kalimat>",
+  "new_sl": <float jika action MODIFY>,
+  "new_tp": <float jika action MODIFY>
 }}"""
 
     api_key = settings.AI_API_KEY or "not-needed"
@@ -494,17 +512,22 @@ Format JSON Output Wajib:
         digits = int(metadata.get("digits", 2))
         symbol_name = str(metadata.get("name", settings.SYMBOL))
 
-        # Entry price (ambil dari AI atau gunakan harga pasar terkini)
+        # Ekstraksi trade_setup jika ada dalam respons AI
+        raw_setup = decision.get('trade_setup') if isinstance(decision.get('trade_setup'), dict) else {}
+        execution_type = str(decision.get('execution_type') or ('BREAKOUT_TRIGGER' if action in ['PENDING_BUY', 'PENDING_SELL'] else 'MARKET_ORDER')).upper()
+
+        # Entry / OP price (ambil dari trade_setup, entry_price, atau harga pasar terkini)
         market_entry = tick.ask if action == 'BUY' else tick.bid
-        entry_price = safe_float(decision.get('entry_price'), market_entry)
+        ep_val = raw_setup.get('op_price') if raw_setup.get('op_price') is not None else decision.get('entry_price')
+        entry_price = safe_float(ep_val, market_entry)
         if entry_price <= 0:
             entry_price = market_entry
         entry_price = round(entry_price, digits)
         
-        sl_val = decision.get('entry_sl') if decision.get('entry_sl') is not None else decision.get('sl_price')
+        sl_val = raw_setup.get('sl_price') if raw_setup.get('sl_price') is not None else (decision.get('entry_sl') or decision.get('sl_price'))
         sl_price = safe_float(sl_val, 0.0)
         
-        tp_val = decision.get('entry_tp') if decision.get('entry_tp') is not None else decision.get('tp_price')
+        tp_val = raw_setup.get('tp_price') if raw_setup.get('tp_price') is not None else (decision.get('entry_tp') or decision.get('tp_price'))
         tp_price = safe_float(tp_val, 0.0)
 
         # Ekstraksi new_sl & new_tp jika action == 'MODIFY'
@@ -624,11 +647,55 @@ Format JSON Output Wajib:
             sl_distance_usd = 0.0
             tp_distance_usd = 0.0
             risk_reward_ratio = 0.0
+
+        # Konstruksi Objek trade_setup Terstandarisasi
+        if action in ['BUY', 'SELL', 'PENDING_BUY', 'PENDING_SELL'] and sl_price > 0:
+            target_op = entry_price if action in ['BUY', 'SELL'] else trigger_price
+            pip_mult = (point * 10) if point > 0 else 0.0001
+            sl_pips_val = round(sl_distance_usd / pip_mult, 1) if not is_gold else 0.0
+            tp_pips_val = round(tp_distance_usd / pip_mult, 1) if not is_gold else 0.0
+            trade_setup = {
+                "has_setup": True,
+                "op_price": float(target_op),
+                "sl_price": float(sl_price),
+                "tp_price": float(tp_price),
+                "rr_ratio": float(risk_reward_ratio),
+                "risk_usd": float(round(sl_distance_usd, digits)),
+                "reward_usd": float(round(tp_distance_usd, digits)),
+                "sl_pips": float(sl_pips_val),
+                "tp_pips": float(tp_pips_val),
+                "is_gold": bool(is_gold)
+            }
+        else:
+            trade_setup = {
+                "has_setup": False,
+                "op_price": 0.0,
+                "sl_price": 0.0,
+                "tp_price": 0.0,
+                "rr_ratio": 0.0,
+                "risk_usd": 0.0,
+                "reward_usd": 0.0
+            }
+
+        # Konstruksi Objek detailed_analysis Terstruktur
+        raw_detailed = decision.get('detailed_analysis') if isinstance(decision.get('detailed_analysis'), dict) else {}
+        primary_structure = str(raw_detailed.get('primary_structure') or f"Struktur Primary TF {primary_tf}: {primary_bias}").strip()
+        trigger_reason = str(raw_detailed.get('trigger_reason') or f"Konfirmasi momentum {base_tf}").strip()
+        exit_plan = str(raw_detailed.get('exit_plan') or f"Target SL {sl_price:.{digits}f} dan TP {tp_price:.{digits}f} (R:R 1:{risk_reward_ratio:.2f})").strip()
+
+        detailed_analysis = {
+            "primary_structure": primary_structure,
+            "trigger_reason": trigger_reason,
+            "exit_plan": exit_plan
+        }
+
+        summary_reason = str(decision.get('summary_reason') or decision.get('reason') or f"Sinyal {action} terkonfirmasi").strip()
         
         # Simpan kembali format bersih ke dictionary (kompatibilitas multi-field)
         decision['action'] = action
         decision['signal'] = action
         decision['confidence'] = confidence
+        decision['execution_type'] = execution_type
         decision['primary_bias'] = primary_bias
         decision['macro_bias'] = macro_bias
         decision['m5_bias'] = primary_bias
@@ -638,6 +705,10 @@ Format JSON Output Wajib:
             "primary": primary_tf,
             "macro": macro_tf
         }
+        decision['trade_setup'] = trade_setup
+        decision['detailed_analysis'] = detailed_analysis
+        decision['summary_reason'] = summary_reason
+        decision['reason'] = summary_reason
         decision['entry_price'] = entry_price
         decision['trigger_price'] = trigger_price
         decision['sl_price'] = sl_price
@@ -650,17 +721,16 @@ Format JSON Output Wajib:
         decision['sl_distance_usd'] = sl_distance_usd
         decision['tp_distance_usd'] = tp_distance_usd
         decision['risk_reward_ratio'] = risk_reward_ratio
-        decision['reason'] = reason
 
         # Logging informatif sesuai instruksi
         logger.info(f"[AI EVALUATION] Sinyal: {action} (Conf: {confidence:.2f}) | Primary ({primary_tf}): {primary_bias} | Macro ({macro_tf}): {macro_bias}")
         if action == 'MODIFY':
-            logger.info(f"[AI POSITION MODIFY SUGGESTION] Disarankan modifikasi taktis ke SL: {new_sl:.{digits}f} | TP: {new_tp:.{digits}f} | Alasan: {reason}")
+            logger.info(f"[AI POSITION MODIFY SUGGESTION] Disarankan modifikasi taktis ke SL: {new_sl:.{digits}f} | TP: {new_tp:.{digits}f} | Alasan: {summary_reason}")
         elif action in ['PENDING_BUY', 'PENDING_SELL']:
             logger.info(f"[AI COMMANDER] Trigger Plan: {action} @ {trigger_price:.{digits}f} | SL: {sl_price:.{digits}f} | TP: {tp_price:.{digits}f} | R:R: 1:{risk_reward_ratio:.2f} | Expire: {expire_seconds:.0f}s")
         elif action in ['BUY', 'SELL']:
-            logger.info(f"[TARGET AUDIT] Entry: {entry_price:.{digits}f} | SL: {sl_price:.{digits}f} (Jarak: ${sl_distance_usd:.{digits}f}) | TP: {tp_price:.{digits}f} (Jarak: ${tp_distance_usd:.{digits}f}) | R:R: 1:{risk_reward_ratio:.2f}")
-        logger.info(f"[AI REASON] {reason}")
+            logger.info(f"[TARGET AUDIT] OP: {entry_price:.{digits}f} | SL: {sl_price:.{digits}f} (Risk: ${sl_distance_usd:.{digits}f}) | TP: {tp_price:.{digits}f} (Reward: ${tp_distance_usd:.{digits}f}) | R:R: 1:{risk_reward_ratio:.2f}")
+        logger.info(f"[AI REASON] {summary_reason}")
         
         if confidence < settings.AI_MIN_CONFIDENCE and action in ['BUY', 'SELL', 'MODIFY', 'CLOSE', 'PENDING_BUY', 'PENDING_SELL']:
             logger.info(f"[AI MTF] Sinyal {action} diabaikan karena confidence ({confidence:.2f}) < Minimum ({settings.AI_MIN_CONFIDENCE})")

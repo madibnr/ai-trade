@@ -100,10 +100,19 @@ def print_signal_box(
     """Mencetak kotak sinyal rekomendasi AI yang rapi dan mencolok di terminal (Mode Signal Only)."""
     current_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     conf_str = f"{confidence * 100:.1f}%"
-    dist_prefix = "$" if digits <= 2 else ""
-    dist_dec = 2 if digits <= 2 else digits
-    sl_str = f"{sl_price:.{digits}f} (Jarak: {dist_prefix}{sl_dist:.{dist_dec}f})"
-    tp_str = f"{tp_price:.{digits}f} (Jarak: {dist_prefix}{tp_dist:.{dist_dec}f})"
+    is_gold = "XAU" in symbol.upper() or "GOLD" in symbol.upper()
+    if is_gold:
+        sl_dist_str = f"${sl_dist:.2f}"
+        tp_dist_str = f"${tp_dist:.2f}"
+    else:
+        pip_size = 10 ** (1 - digits) if digits > 2 else 0.0001
+        sl_pips = sl_dist / pip_size
+        tp_pips = tp_dist / pip_size
+        sl_dist_str = f"{sl_pips:.1f} pips"
+        tp_dist_str = f"{tp_pips:.1f} pips"
+
+    sl_str = f"{sl_price:.{digits}f} (Jarak: {sl_dist_str})"
+    tp_str = f"{tp_price:.{digits}f} (Jarak: {tp_dist_str})"
     rr_str = f"1:{rr_ratio:.2f} (Min. 1:1.50)"
     entry_str = f"{entry_price:.{digits}f}"
     inst_str = f"{symbol} (Base TF: {base_tf})"
@@ -258,7 +267,29 @@ def main():
     if getattr(settings, "ENABLE_WEB_DASHBOARD", True):
         try:
             from src.web.server import start_dashboard_thread, update_dashboard_state
-            start_dashboard_thread(port=getattr(settings, "WEB_PORT", 8080))
+            web_port = getattr(settings, "WEB_PORT", 8080)
+            start_dashboard_thread(port=web_port)
+            
+            is_gold_inst = "XAU" in symbol.upper() or "GOLD" in symbol.upper()
+            inst_type = "GOLD" if is_gold_inst else "FOREX"
+            inst_label = f"INSTANCE: {inst_type} ({symbol})"
+            sym_digits = info.digits if info else (2 if is_gold_inst else 5)
+            sym_point = info.point if info else (0.01 if is_gold_inst else 0.00001)
+
+            update_dashboard_state("instance", {
+                "symbol": symbol,
+                "type": inst_type,
+                "label": inst_label,
+                "port": web_port
+            })
+            update_dashboard_state("market", {
+                "symbol": symbol,
+                "timeframe": base_tf_str,
+                "digits": sym_digits,
+                "point": sym_point,
+                "is_forex": not is_gold_inst,
+                "is_connected": True
+            })
             if acc_init:
                 update_dashboard_state("account", {
                     "balance": float(acc_init.balance),
@@ -286,21 +317,10 @@ def main():
                 curr_symbol = "Rp" if curr_code == "IDR" else "$"
                 logger.info(f"[RESET HARIAN] Tanggal berganti ({today}). Saldo awal di-reset: {curr_symbol}{initial_balance:,.2f}. Target harian aktif kembali.")
 
-            # Pengecekan status pasar
-            if not is_market_open(symbol):
-                logger.info("[INFO] Pasar sedang tutup. Menunggu...")
-                time.sleep(60)
-                continue
-            
-            # 1. Pemantauan Real-Time Tick (0 Latensi)
-            # Jalur Pengawalan Posisi Aktif (BEP, Stagnant Lock, TP Extender)
-            if execution_mode == "AUTO":
-                manage_open_positions(symbol)
+            # Evaluasi status pasar
+            market_active = is_market_open(symbol)
 
-            # Jalur Penembak Jitu (Cek Trigger Plan Breakout real-time)
-            check_and_execute_trigger_plan(symbol, execution_mode=execution_mode)
-
-            # Update Snapshot Akun & Pasar ke Dashboard Web secara real-time (Non-Blocking)
+            # Update Snapshot Akun & Pasar ke Dashboard Web secara real-time (Non-Blocking, tetap update walau pasar tutup)
             if getattr(settings, "ENABLE_WEB_DASHBOARD", True):
                 try:
                     from src.web.server import update_dashboard_state
@@ -318,21 +338,52 @@ def main():
                         })
 
                     t_snap = get_current_tick(symbol)
+                    is_gold_s = "XAU" in symbol.upper() or "GOLD" in symbol.upper()
+                    m_digits = info.digits if info else (2 if is_gold_s else 5)
+                    m_point = info.point if info else (0.01 if is_gold_s else 0.00001)
+
                     if t_snap:
                         server_time_str = datetime.fromtimestamp(t_snap.time).strftime("%Y-%m-%d %H:%M:%S") if t_snap.time > 0 else "-"
-                        point_val = info.point if info and info.point > 0 else 0.01
-                        sp_points = round((t_snap.ask - t_snap.bid) / point_val, 1)
+                        sp_points = round((t_snap.ask - t_snap.bid) / m_point, 1) if m_point > 0 else 0.0
                         update_dashboard_state("market", {
                             "symbol": symbol,
                             "timeframe": base_tf_str,
+                            "digits": m_digits,
+                            "point": m_point,
+                            "is_forex": not is_gold_s,
                             "current_bid": float(t_snap.bid),
                             "current_ask": float(t_snap.ask),
                             "spread_points": float(sp_points),
                             "is_connected": True,
+                            "is_market_open": market_active,
                             "server_time": server_time_str
+                        })
+                    else:
+                        update_dashboard_state("market", {
+                            "symbol": symbol,
+                            "timeframe": base_tf_str,
+                            "digits": m_digits,
+                            "point": m_point,
+                            "is_forex": not is_gold_s,
+                            "is_connected": True,
+                            "is_market_open": market_active
                         })
                 except Exception:
                     pass
+
+            # Jika pasar tutup, tunggu 60 detik sebelum perulangan berikutnya
+            if not market_active:
+                logger.info("[INFO] Pasar sedang tutup. Menunggu...")
+                time.sleep(60)
+                continue
+            
+            # 1. Pemantauan Real-Time Tick (0 Latensi)
+            # Jalur Pengawalan Posisi Aktif (BEP, Stagnant Lock, TP Extender)
+            if execution_mode == "AUTO":
+                manage_open_positions(symbol)
+
+            # Jalur Penembak Jitu (Cek Trigger Plan Breakout real-time)
+            check_and_execute_trigger_plan(symbol, execution_mode=execution_mode)
 
             # 2. Pelacakan & Evaluasi Daily Target Profit Lock / Circuit Breaker
             if execution_mode == "AUTO" and settings.ENABLE_DAILY_TARGET_LOCK:
@@ -472,7 +523,10 @@ def main():
                                 "rsi": float(mtf_data.get("primary", {}).get("rsi", 50.0)),
                                 "last_signal": action,
                                 "confidence": float(confidence),
-                                "reason_summary": str(ai_decision.get("reason", "-"))
+                                "reason_summary": str(ai_decision.get("summary_reason") or ai_decision.get("reason", "-")),
+                                "execution_type": str(ai_decision.get("execution_type", "MARKET_ORDER")),
+                                "trade_setup": ai_decision.get("trade_setup", {}),
+                                "detailed_analysis": ai_decision.get("detailed_analysis", {})
                             })
                         except Exception:
                             pass
@@ -536,7 +590,10 @@ def main():
                                 "rsi": float(mtf_data.get("primary", {}).get("rsi", 50.0)),
                                 "last_signal": action,
                                 "confidence": float(confidence),
-                                "reason_summary": str(ai_decision.get("reason", "-"))
+                                "reason_summary": str(ai_decision.get("summary_reason") or ai_decision.get("reason", "-")),
+                                "execution_type": str(ai_decision.get("execution_type", "MARKET_ORDER")),
+                                "trade_setup": ai_decision.get("trade_setup", {}),
+                                "detailed_analysis": ai_decision.get("detailed_analysis", {})
                             })
                         except Exception:
                             pass

@@ -8,9 +8,29 @@ from datetime import datetime
 from typing import Dict, Any, List
 
 from utils.logger import logger
+from config import settings
+
+def get_current_instance_info():
+    sym = str(getattr(settings, "SYMBOL", os.getenv("SYMBOL", "XAUUSD"))).strip()
+    tf = str(getattr(settings, "TIMEFRAME_STR", os.getenv("TIMEFRAME", "M1"))).strip().upper()
+    is_gold = "XAU" in sym.upper() or "GOLD" in sym.upper()
+    digits = 2 if is_gold else 5
+    point = 0.01 if is_gold else 0.00001
+    inst_type = "GOLD" if is_gold else "FOREX"
+    label = f"INSTANCE: {inst_type} ({sym})"
+    port = getattr(settings, "WEB_PORT", int(os.getenv("WEB_PORT", 8080)))
+    return sym, tf, is_gold, digits, point, inst_type, label, port
+
+_init_sym, _init_tf, _init_gold, _init_digits, _init_point, _init_type, _init_label, _init_port = get_current_instance_info()
 
 # Global in-memory Dashboard State (Thread-Safe via Copy)
 dashboard_state: Dict[str, Any] = {
+    "instance": {
+        "symbol": _init_sym,
+        "type": _init_type,
+        "label": _init_label,
+        "port": _init_port
+    },
     "account": {
         "balance": 0.0,
         "equity": 0.0,
@@ -20,12 +40,16 @@ dashboard_state: Dict[str, Any] = {
         "circuit_breaker_locked": False
     },
     "market": {
-        "symbol": "XAUUSD",
-        "timeframe": "M1",
+        "symbol": _init_sym,
+        "timeframe": _init_tf,
+        "digits": _init_digits,
+        "point": _init_point,
+        "is_forex": not _init_gold,
         "current_bid": 0.0,
         "current_ask": 0.0,
         "spread_points": 0,
         "is_connected": False,
+        "is_market_open": True,
         "server_time": "-"
     },
     "ai_status": {
@@ -36,7 +60,22 @@ dashboard_state: Dict[str, Any] = {
         "rsi": 50.0,
         "last_signal": "HOLD",
         "confidence": 0.0,
-        "reason_summary": "Menunggu candle tertutup pertama..."
+        "reason_summary": "Menunggu candle tertutup pertama...",
+        "execution_type": "MARKET_ORDER",
+        "trade_setup": {
+            "has_setup": False,
+            "op_price": 0.0,
+            "sl_price": 0.0,
+            "tp_price": 0.0,
+            "rr_ratio": 0.0,
+            "risk_usd": 0.0,
+            "reward_usd": 0.0
+        },
+        "detailed_analysis": {
+            "primary_structure": "-",
+            "trigger_reason": "-",
+            "exit_plan": "-"
+        }
     },
     "active_position": {
         "has_position": False,
@@ -153,7 +192,7 @@ def run_server(host: str = "0.0.0.0", port: int = 8080):
     # Jalankan uvicorn dengan level logging warning agar tidak mengotori konsol trading
     uvicorn.run(app, host=host, port=port, log_level="warning")
 
-def start_dashboard_thread(host: str = "0.0.0.0", port: int = 8080) -> threading.Thread:
+def start_dashboard_thread(host: str = "0.0.0.0", port: int = None) -> threading.Thread:
     """
     Menjalankan FastAPI Web Dashboard di background thread (daemon) non-blocking.
     Menjamin zero latency impact pada eksekusi trading bot MT5 utama.
@@ -161,13 +200,32 @@ def start_dashboard_thread(host: str = "0.0.0.0", port: int = 8080) -> threading
     if app is None:
         return None
 
+    if port is None:
+        port = getattr(settings, "WEB_PORT", int(os.getenv("WEB_PORT", 8080)))
+
+    # Re-sync instance & market metadata with active settings
+    sym, tf, is_gold, digits, point, inst_type, label, _ = get_current_instance_info()
+    update_dashboard_state("instance", {
+        "symbol": sym,
+        "type": inst_type,
+        "label": label,
+        "port": port
+    })
+    update_dashboard_state("market", {
+        "symbol": sym,
+        "timeframe": tf,
+        "digits": digits,
+        "point": point,
+        "is_forex": not is_gold
+    })
+
     server_thread = threading.Thread(
         target=run_server,
         args=(host, port),
         daemon=True,
-        name="WebDashboardThread"
+        name=f"WebDashboardThread_{port}"
     )
     server_thread.start()
-    logger.info(f"[WEB DASHBOARD] Server dashboard aktif di http://localhost:{port} (Thread: Daemon)")
-    add_dashboard_event("SYSTEM", f"Server dashboard aktif di port {port}")
+    logger.info(f"[WEB DASHBOARD] Server dashboard aktif di http://localhost:{port} (Thread: Daemon | {label})")
+    add_dashboard_event("SYSTEM", f"Server dashboard aktif di port {port} ({label})")
     return server_thread
