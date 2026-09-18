@@ -1,8 +1,10 @@
 import os
+import sys
 from dotenv import load_dotenv
 
 # Load environment variables
-load_dotenv()
+env_file = os.getenv("ENV_FILE", ".env")
+load_dotenv(env_file)
 
 def get_env_float(key: str, default: float) -> float:
     val = os.getenv(key)
@@ -29,6 +31,7 @@ def get_env_bool(key: str, default: bool) -> bool:
     return val.strip().lower() in ("true", "1", "yes", "y")
 
 # MT5 Connection
+MT5_PATH = os.getenv("MT5_PATH", r"C:\Program Files\MetaTrader 5 - Copy\terminal64.exe")
 MT5_LOGIN = get_env_int("MT5_LOGIN", 0)
 MT5_PASSWORD = os.getenv("MT5_PASSWORD", "")
 MT5_SERVER = os.getenv("MT5_SERVER", "")

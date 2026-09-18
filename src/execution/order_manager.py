@@ -1,49 +1,134 @@
 import MetaTrader5 as mt5
 from utils.logger import logger
 from config import settings
-from src.data.market_data import get_symbol_info, get_current_tick
+from src.data.market_data import get_symbol_info, get_current_tick, get_symbol_metadata
 from datetime import datetime
 
-def check_daily_drawdown_limit():
-    """
-    Mengecek apakah total kerugian (realized loss) hari ini telah menyentuh/melebihi
-    persentase MAX_DAILY_LOSS_PERCENT dari saldo awal harian akun.
-    Return True jika aman (bisa trading), False jika sudah mencapai batas Kill Switch.
-    """
-    account_info = mt5.account_info()
-    if account_info is None:
-        return True # Asumsikan aman jika gagal fetch
+# Circuit Breaker state cache
+_circuit_breaker_locked = False
+_circuit_breaker_reason = ""
 
-    # Set rentang waktu dari jam 00:00 hari ini sampai saat ini
+def set_circuit_breaker_lock(locked: bool, reason: str = ""):
+    """Mengaktifkan atau menonaktifkan status penguncian Circuit Breaker / Target Lock."""
+    global _circuit_breaker_locked, _circuit_breaker_reason
+    _circuit_breaker_locked = locked
+    _circuit_breaker_reason = reason
+
+def is_circuit_breaker_locked():
+    """Mengecek status terkunci Circuit Breaker."""
+    return _circuit_breaker_locked, _circuit_breaker_reason
+
+def evaluate_daily_pnl_limits(
+    current_balance: float,
+    initial_balance: float,
+    is_idr_account: bool,
+    kurs_usd_idr: float = 16000.0,
+    target_profit_idr: float = None,
+    max_loss_idr: float = None
+):
+    """
+    Mengevaluasi apakah PnL harian telah menyentuh target laba atau batas kerugian darurat.
+    Mengembalikan tuple: (can_trade: bool, status: str, daily_pnl_idr: float)
+    - status: 'NORMAL' | 'TARGET_LOCKED' | 'CIRCUIT_BREAKER'
+    """
+    balance_diff = current_balance - initial_balance
+    daily_pnl_idr = balance_diff if is_idr_account else balance_diff * kurs_usd_idr
+    
+    target_profit = target_profit_idr if target_profit_idr is not None else settings.DAILY_TARGET_PROFIT_IDR
+    max_loss = max_loss_idr if max_loss_idr is not None else settings.DAILY_MAX_LOSS_IDR
+    
+    if not getattr(settings, "ENABLE_DAILY_TARGET_LOCK", True):
+        return True, "NORMAL", daily_pnl_idr
+        
+    if daily_pnl_idr >= target_profit:
+        return False, "TARGET_LOCKED", daily_pnl_idr
+    elif daily_pnl_idr <= -max_loss:
+        return False, "CIRCUIT_BREAKER", daily_pnl_idr
+        
+    return True, "NORMAL", daily_pnl_idr
+
+def get_bep_offset_price(metadata: dict, base_offset: float) -> float:
+    """
+    Menghitung jarak offset penguncian BEP secara adaptif multi-aset:
+    - Pasangan Forex (digits >= 3): mengunci 2.0 pips (20 point pada broker 5 digit).
+    - Emas / Kripto / Indeks (digits <= 2): menggunakan nominal dolar (default 0.20 untuk XAUUSD).
+    """
+    digits = metadata["digits"]
+    point = metadata["point"]
+
+    if digits >= 3:
+        if base_offset >= 0.01:
+            offset = 20.0 * point
+        else:
+            offset = float(base_offset)
+    else:
+        offset = float(base_offset)
+
+    return max(offset, point)
+
+def get_daily_realized_pnl():
+    """
+    Mengambil total PnL yang sudah terealisasi hari ini (sejak 00:00) khusus untuk bot ini (berdasarkan magic number).
+    Mendukung deteksi otomatis mata uang akun (IDR vs USD):
+    - Jika IDR: PnL dari riwayat deal SUDAH dalam satuan Rupiah (JANGAN dikalikan KURS_USD_IDR).
+    - Jika USD: PnL masih berupa Dolar, dikonversikan ke IDR dengan KURS_USD_IDR.
+    Mengembalikan tuple: (daily_pnl_idr: float, is_idr_account: bool, currency: str, raw_pnl: float)
+    """
+    acc = mt5.account_info()
+    if acc is None:
+        return 0.0, False, "USD", 0.0
+
+    currency = getattr(acc, "currency", "USD").upper()
+    is_idr_account = currency == "IDR"
+
     date_from = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     date_to = datetime.now()
 
     deals = mt5.history_deals_get(date_from, date_to)
-    
     total_realized_pnl = 0.0
     if deals:
         for deal in deals:
-            # Hitung deal khusus milik bot ini
             if deal.magic == settings.MAGIC_NUMBER and deal.type in (mt5.DEAL_TYPE_BUY, mt5.DEAL_TYPE_SELL):
                 total_realized_pnl += deal.profit
-                # Catatan: deal.profit sudah mencakup profit bersih (positif/negatif)
 
-    # Jika profit hari ini masih positif atau impas, aman
-    if total_realized_pnl >= 0:
+    raw_daily_pnl = float(total_realized_pnl)
+    if is_idr_account:
+        daily_pnl_idr = raw_daily_pnl
+    else:
+        daily_pnl_idr = raw_daily_pnl * float(getattr(settings, "KURS_USD_IDR", 16000.0))
+
+    return daily_pnl_idr, is_idr_account, currency, raw_daily_pnl
+
+def check_daily_drawdown_limit():
+    """
+    Mengecek apakah total kerugian (realized loss) hari ini telah menyentuh/melebihi
+    DAILY_MAX_LOSS_IDR dari akun.
+    Mendukung deteksi otomatis mata uang akun (IDR vs USD) secara dinamis.
+    Return True jika aman (bisa trading), False jika sudah mencapai batas Circuit Breaker.
+    """
+    if not getattr(settings, "ENABLE_DAILY_TARGET_LOCK", True):
         return True
 
-    # Jika merugi, bandingkan dengan modal
-    current_balance = account_info.balance
-    # Pendekatan: Saldo awal hari ini = current_balance - total_realized_pnl (karena pnl negatif, jadi +)
-    starting_balance = current_balance - total_realized_pnl 
-    
-    loss_percent = abs(total_realized_pnl) / starting_balance * 100
-    
-    if loss_percent >= settings.MAX_DAILY_LOSS_PERCENT:
-        logger.error(f"[KILL SWITCH] Kerugian harian ({loss_percent:.2f}%) melampaui batas maksimal ({settings.MAX_DAILY_LOSS_PERCENT}%).")
-        logger.error(f"Total Rugi Hari Ini: ${abs(total_realized_pnl):.2f}. Trading dihentikan sementara hingga besok.")
+    daily_pnl_idr, is_idr_account, currency, raw_pnl = get_daily_realized_pnl()
+
+    # Jika profit positif atau impas, aman
+    if daily_pnl_idr >= 0:
+        return True
+
+    daily_loss_idr = abs(daily_pnl_idr)
+
+    if daily_loss_idr >= settings.DAILY_MAX_LOSS_IDR:
+        logger.error(
+            f"[CIRCUIT BREAKER LOCKED] Kerugian harian akumulasi (Rp{daily_loss_idr:,.0f}) "
+            f"telah melampaui batas toleransi (Rp{settings.DAILY_MAX_LOSS_IDR:,.0f}). "
+            f"Seluruh aktivitas trading baru DITUTUP untuk hari ini!"
+        )
+        set_circuit_breaker_lock(
+            True,
+            f"[CIRCUIT BREAKER LOCKED] Kerugian harian akumulasi (Rp{daily_loss_idr:,.0f}) telah melampaui batas toleransi (Rp{settings.DAILY_MAX_LOSS_IDR:,.0f})"
+        )
         return False
-        
+
     return True
 
 def handle_trade_error(result, action_type="OP"):
@@ -66,9 +151,11 @@ def handle_trade_error(result, action_type="OP"):
     elif retcode == 10019:
         acc = mt5.account_info()
         if acc:
+            curr_code = getattr(acc, "currency", "USD").upper()
+            curr_symbol = "Rp" if curr_code == "IDR" else "$"
             logger.error(f"[ERROR] {action_type} Gagal! Margin/Saldo tidak cukup (Retcode: 10019). "
-                         f"Free Margin: ${acc.margin_free:.2f}, Margin Terpakai: ${acc.margin:.2f}, "
-                         f"Balance: ${acc.balance:.2f}. Comment: {comment}")
+                         f"Free Margin: {curr_symbol}{acc.margin_free:,.2f}, Margin Terpakai: {curr_symbol}{acc.margin:,.2f}, "
+                         f"Balance: {curr_symbol}{acc.balance:,.2f}. Comment: {comment}")
         else:
             logger.error(f"[ERROR] {action_type} Gagal! Margin/Saldo tidak cukup untuk membuka posisi (Retcode: 10019). "
                          f"Comment: {comment}")
@@ -172,7 +259,9 @@ def calculate_lot_size(symbol, sl_dist_price, risk_percent=None):
         final_lot = max(symbol_info.volume_min, min(max_allowed_lot, final_lot))
         final_lot = float(round(final_lot, 2))
         
-        logger.info(f"[RISK MGT] Balance: ${balance:.2f} | Risk: {risk_percent}% (${risk_amount:.2f}) | SL Jarak: {sl_ticks:.1f} ticks | Final Lot: {final_lot} lot")
+        curr_code = getattr(account_info, "currency", "USD").upper()
+        curr_symbol = "Rp" if curr_code == "IDR" else "$"
+        logger.info(f"[RISK MGT] Balance: {curr_symbol}{balance:,.2f} | Risk: {risk_percent}% ({curr_symbol}{risk_amount:,.2f}) | SL Jarak: {sl_ticks:.1f} ticks | Final Lot: {final_lot} lot")
         return final_lot
     except ZeroDivisionError:
         return symbol_info.volume_min
@@ -195,9 +284,15 @@ def get_active_positions(symbol):
 
 def open_position(symbol, order_type, lot_size, sl_price=0.0, tp_price=0.0, comment="Bot Order"):
     """
-    Membuka posisi BUY atau SELL dengan validasi Spread, Stops Level, dan Anti-Stacking Guard.
+    Membuka posisi BUY atau SELL dengan validasi Circuit Breaker, Anti-Stacking, Spread, dan Stops Level.
     """
-    # 0. Validasi Anti-Stacking (Maksimal Posisi Simultan)
+    # 0. Validasi Circuit Breaker / Daily Target Lock
+    is_locked, lock_reason = is_circuit_breaker_locked()
+    if is_locked:
+        logger.warning(f"[BLOCKED by Daily Circuit Breaker] OP Ditolak! Alasan: {lock_reason}")
+        return None
+
+    # 1. Validasi Anti-Stacking (Maksimal Posisi Simultan)
     current_active = get_active_positions(symbol)
     if len(current_active) >= settings.MAX_OPEN_POSITIONS:
         logger.warning(f"[WARNING] OP Dibatalkan! Maksimal posisi aktif ({settings.MAX_OPEN_POSITIONS}) telah tercapai.")
@@ -218,12 +313,15 @@ def open_position(symbol, order_type, lot_size, sl_price=0.0, tp_price=0.0, comm
         logger.warning(f"[WARNING] OP Dibatalkan! Spread saat ini ({current_spread}) melebihi batas maksimal ({settings.MAX_SPREAD_POINTS}).")
         return None
 
+    metadata = get_symbol_metadata(symbol)
+    digits = metadata["digits"]
+    stops_level = metadata["stops_level_dist"]
+
     price = tick.ask if order_type == mt5.ORDER_TYPE_BUY else tick.bid
+    price = round(price, digits)
     filling_type = get_filling_mode(symbol)
 
     # 2. Validasi Jarak Minimum SL dan TP (Trade Stops Level)
-    stops_level = symbol_info.trade_stops_level * symbol_info.point
-    
     if order_type == mt5.ORDER_TYPE_BUY:
         if sl_price > 0 and (price - sl_price) < stops_level:
             logger.warning(f"[WARNING] Jarak SL terlalu dekat. Disesuaikan otomatis ke batas broker.")
@@ -240,14 +338,20 @@ def open_position(symbol, order_type, lot_size, sl_price=0.0, tp_price=0.0, comm
             logger.warning(f"[WARNING] Jarak TP terlalu dekat. Disesuaikan otomatis ke batas broker.")
             tp_price = price - stops_level
 
+    # Pastikan pembulatan harga SL dan TP sesuai dengan digits simbol
+    sl_price = round(sl_price, digits) if sl_price > 0 else 0.0
+    tp_price = round(tp_price, digits) if tp_price > 0 else 0.0
+
     # 3. Validasi Margin Pra-Eksekusi (Pre-Trade Margin Check)
     account_info = mt5.account_info()
     if account_info is not None:
         required_margin = mt5.order_calc_margin(order_type, symbol, float(lot_size), price)
         if required_margin is not None:
             if account_info.margin_free < required_margin:
+                curr_code = getattr(account_info, "currency", "USD").upper()
+                curr_symbol = "Rp" if curr_code == "IDR" else "$"
                 logger.warning(f"[WARNING] Margin tidak cukup untuk buka posisi! "
-                               f"Dibutuhkan: ${required_margin:.2f}, Free Margin: ${account_info.margin_free:.2f}. "
+                               f"Dibutuhkan: {curr_symbol}{required_margin:,.2f}, Free Margin: {curr_symbol}{account_info.margin_free:,.2f}. "
                                "Order dibatalkan secara aman.")
                 return None
 
@@ -294,7 +398,7 @@ def open_position(symbol, order_type, lot_size, sl_price=0.0, tp_price=0.0, comm
         real_tp = tp_price
         
     tipe_str = 'BUY' if order_type == mt5.ORDER_TYPE_BUY else 'SELL'
-    logger.info(f"[ORDER EXECUTED] Tiket: {result.order} | Aksi: {tipe_str} | Volume Lot Riil: {real_volume} lot | Harga Entry: {real_price} | SL: {real_sl} | TP: {real_tp}")
+    logger.info(f"[ORDER EXECUTED] Tiket: {result.order} | Aksi: {tipe_str} | Volume Lot Riil: {real_volume} lot | Harga Entry: {real_price:.{digits}f} | SL: {real_sl:.{digits}f} | TP: {real_tp:.{digits}f}")
     return result
 
 def close_position(ticket):
@@ -368,7 +472,10 @@ def check_and_apply_bep(symbol: str) -> None:
     if account and getattr(account, "currency", "").upper() == "IDR":
         is_idr_account = True
 
-    stops_level_dist = max(symbol_info.trade_stops_level * symbol_info.point, symbol_info.point)
+    metadata = get_symbol_metadata(symbol)
+    digits = metadata["digits"]
+    stops_level_dist = metadata["stops_level_dist"]
+    offset_price = get_bep_offset_price(metadata, settings.BEP_LOCK_OFFSET_PRICE)
 
     for pos in positions:
         # Hitung floating profit nominal sesuai mata uang akun
@@ -389,7 +496,7 @@ def check_and_apply_bep(symbol: str) -> None:
             should_modify = False
 
             if pos_type == mt5.ORDER_TYPE_BUY:
-                target_sl = round(price_open + settings.BEP_LOCK_OFFSET_PRICE, symbol_info.digits)
+                target_sl = round(price_open + offset_price, digits)
                 # Syarat BUY: Harga Bid pasar harus sudah berada AMAN di atas target_sl plus stop distance,
                 # dan SL saat ini masih berada di bawah target_sl (belum dimodifikasi).
                 if (tick.bid - target_sl) >= stops_level_dist and current_sl < target_sl:
@@ -397,7 +504,7 @@ def check_and_apply_bep(symbol: str) -> None:
                     should_modify = True
 
             elif pos_type == mt5.ORDER_TYPE_SELL:
-                target_sl = round(price_open - settings.BEP_LOCK_OFFSET_PRICE, symbol_info.digits)
+                target_sl = round(price_open - offset_price, digits)
                 # Syarat SELL: Harga Ask pasar harus sudah berada AMAN di bawah target_sl minus stop distance,
                 # dan SL saat ini masih berada di atas target_sl atau belum ada SL (0.0).
                 if (target_sl - tick.ask) >= stops_level_dist and (current_sl > target_sl or current_sl == 0.0):
@@ -417,7 +524,7 @@ def check_and_apply_bep(symbol: str) -> None:
                     logger.info(
                         f"[BEP TRIGGERED] Tiket {pos.ticket} berhasil diproteksi! "
                         f"Floating Profit: {profit_display_str} | "
-                        f"SL digeser ke {new_sl:.2f} (Locked Profit)."
+                        f"SL digeser ke {new_sl:.{digits}f} (Locked Profit)."
                     )
                 else:
                     err_msg = f"Retcode: {result.retcode} - {result.comment}" if result else "No response"

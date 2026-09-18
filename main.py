@@ -8,8 +8,7 @@ from src.data.market_data import (
     get_historical_data,
     is_market_open,
     get_symbol_info,
-    get_current_tick,
-    get_multi_timeframe_data
+    get_current_tick
 )
 from src.strategy.ai_strategy import get_ai_decision
 from src.execution.order_manager import (
@@ -18,7 +17,10 @@ from src.execution.order_manager import (
     close_position,
     get_active_positions,
     check_daily_drawdown_limit,
-    check_and_apply_bep
+    check_and_apply_bep,
+    evaluate_daily_pnl_limits,
+    set_circuit_breaker_lock,
+    get_daily_realized_pnl
 )
 
 TF_MAP = {
@@ -55,6 +57,12 @@ def main():
     symbol = settings.SYMBOL
     timeframe = TF_MAP.get(settings.TIMEFRAME_STR, mt5.TIMEFRAME_M1)
     
+    # Pastikan simbol terpilih dan aktif di jendela Market Watch MT5
+    if not mt5.symbol_select(symbol, True):
+        logger.error(f"[ERROR] Gagal memilih dan mengaktifkan simbol {symbol} di Market Watch MT5. Keluar.")
+        shutdown_mt5()
+        return
+
     info = get_symbol_info(symbol)
     if not info:
         logger.error(f"[ERROR] Gagal mendapatkan info spesifikasi {symbol}. Keluar.")
@@ -77,8 +85,9 @@ def main():
     last_lock_log_time = 0.0
 
     if acc_init:
-        curr_symbol = getattr(acc_init, "currency", "USD")
-        logger.info(f"[MONEY MGT] Saldo Awal Hari Ini: {initial_balance:,.2f} {curr_symbol} (Tanggal: {current_trade_date})")
+        curr_code = getattr(acc_init, "currency", "USD").upper()
+        curr_symbol = "Rp" if curr_code == "IDR" else "$"
+        logger.info(f"[MONEY MGT] Saldo Awal Hari Ini: {curr_symbol}{initial_balance:,.2f} {curr_code} (Tanggal: {current_trade_date})")
     
     try:
         while True:
@@ -90,9 +99,12 @@ def main():
                 if fresh_acc:
                     initial_balance = fresh_acc.balance
                 daily_lock_triggered = False
+                set_circuit_breaker_lock(False, "")
                 lock_reason = ""
                 last_lock_log_time = 0.0
-                logger.info(f"[RESET HARIAN] Tanggal berganti ({today}). Saldo awal di-reset: {initial_balance:,.2f}. Target harian aktif kembali.")
+                curr_code = getattr(fresh_acc, "currency", "USD").upper() if fresh_acc else "USD"
+                curr_symbol = "Rp" if curr_code == "IDR" else "$"
+                logger.info(f"[RESET HARIAN] Tanggal berganti ({today}). Saldo awal di-reset: {curr_symbol}{initial_balance:,.2f}. Target harian aktif kembali.")
 
             # Pengecekan status pasar
             if not is_market_open(symbol):
@@ -105,25 +117,27 @@ def main():
 
             # 2. Pelacakan & Evaluasi Daily Target Profit Lock / Circuit Breaker
             if settings.ENABLE_DAILY_TARGET_LOCK:
-                acc_now = mt5.account_info()
-                if acc_now:
-                    current_balance = acc_now.balance
-                    balance_diff = current_balance - initial_balance
-                    is_idr_account = getattr(acc_now, "currency", "").upper() == "IDR"
-                    daily_pnl_idr = balance_diff if is_idr_account else balance_diff * settings.KURS_USD_IDR
+                daily_pnl_idr, is_idr_account, curr_code, raw_pnl = get_daily_realized_pnl()
 
-                    if not daily_lock_triggered:
-                        # Evaluasi Kondisi 1: Target Profit Tercapai
-                        if daily_pnl_idr >= settings.DAILY_TARGET_PROFIT_IDR:
-                            daily_lock_triggered = True
-                            lock_reason = f"[TARGET REACHED] Target profit harian tercapai (+Rp{daily_pnl_idr:,.0f})! Bot mengunci keuntungan dan berhenti trading untuk hari ini."
-                            logger.info(lock_reason)
+                if not daily_lock_triggered:
+                    # Evaluasi Kondisi 1: Target Profit Tercapai
+                    if daily_pnl_idr >= settings.DAILY_TARGET_PROFIT_IDR:
+                        daily_lock_triggered = True
+                        lock_reason = f"[TARGET REACHED] Target profit harian tercapai (+Rp{daily_pnl_idr:,.0f})! Bot mengunci keuntungan dan berhenti trading untuk hari ini."
+                        logger.info(lock_reason)
+                        set_circuit_breaker_lock(True, lock_reason)
 
-                        # Evaluasi Kondisi 2: Max Loss Terbentur / Circuit Breaker
-                        elif daily_pnl_idr <= -settings.DAILY_MAX_LOSS_IDR:
-                            daily_lock_triggered = True
-                            lock_reason = f"[CIRCUIT BREAKER] Batas rugi harian tersentuh (-Rp{abs(daily_pnl_idr):,.0f})! Menghentikan bot demi melindungi sisa modal."
-                            logger.error(lock_reason)
+                    # Evaluasi Kondisi 2: Max Loss Terbentur / Circuit Breaker
+                    elif daily_pnl_idr <= -settings.DAILY_MAX_LOSS_IDR:
+                        daily_lock_triggered = True
+                        daily_loss_idr = abs(daily_pnl_idr)
+                        lock_reason = (
+                            f"[CIRCUIT BREAKER LOCKED] Kerugian harian akumulasi (Rp{daily_loss_idr:,.0f}) "
+                            f"telah melampaui batas toleransi (Rp{settings.DAILY_MAX_LOSS_IDR:,.0f}). "
+                            f"Seluruh aktivitas trading baru DITUTUP untuk hari ini!"
+                        )
+                        logger.error(lock_reason)
+                        set_circuit_breaker_lock(True, lock_reason)
 
                 if daily_lock_triggered:
                     # Keselarasan posisi mengambang:
@@ -155,10 +169,18 @@ def main():
                 if not check_daily_drawdown_limit():
                     continue # Lewati eksekusi hingga hari berganti (script tetap jalan mengecek waktu)
                 
-                # 2. Ambil data Multi-Timeframe (M15, M5, M1)
-                mtf_data = get_multi_timeframe_data(symbol)
-                if not mtf_data or not mtf_data.get("m1", {}).get("recent_candles"):
+                # 2. Ambil data OHLCV historis untuk M1 dan M5
+                df_m1 = get_historical_data(symbol, mt5.TIMEFRAME_M1, count=100)
+                df_m5 = get_historical_data(symbol, mt5.TIMEFRAME_M5, count=100)
+                
+                if df_m1.empty or df_m5.empty:
+                    logger.warning("[WARNING] Gagal mengambil data historis M1 atau M5.")
                     continue
+                    
+                mtf_data = {
+                    "m1": df_m1,
+                    "m5": df_m5
+                }
                     
                 # 3. Cek posisi aktif dari bot ini (berdasarkan Magic Number)
                 bot_positions = get_active_positions(symbol)
@@ -169,7 +191,7 @@ def main():
                 if not tick:
                     continue
                     
-                # 4. Hasilkan sinyal dari strategi AI berbasis Multi-Timeframe (M15-M5-M1)
+                # 4. Hasilkan sinyal dari strategi AI
                 ai_decision = get_ai_decision(mtf_data, tick, bot_positions)
                 action = ai_decision.get('action', 'HOLD')
                 
