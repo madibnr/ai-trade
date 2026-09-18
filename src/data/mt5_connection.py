@@ -7,7 +7,8 @@ def initialize_mt5():
     """Initializes connection to MT5 terminal."""
     logger.info("Initializing MT5 connection...")
     
-    if not mt5.initialize(path=settings.MT5_PATH):
+    init_success = mt5.initialize(path=settings.MT5_PATH) if settings.MT5_PATH else mt5.initialize()
+    if not init_success:
         logger.error(f"initialize() failed, error code: {mt5.last_error()}")
         return False
         

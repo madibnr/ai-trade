@@ -1,0 +1,726 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MT5 AI Trading Dashboard</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            50: '#eff6ff',
+                            100: '#dbeafe',
+                            500: '#3b82f6',
+                            600: '#2563eb',
+                            700: '#1d4ed8',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        @keyframes pulse-dot {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.4; transform: scale(0.92); }
+        }
+        .animate-pulse-dot {
+            animation: pulse-dot 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        /* Custom Scrollbar for Light Theme */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #f1f5f9; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-800 min-h-screen font-sans antialiased p-3 sm:p-5 md:p-6">
+
+    <div class="max-w-7xl mx-auto space-y-5 md:space-y-6">
+
+        <!-- =================================================================== -->
+        <!-- 1. TOP BAR: Branding, Unified Connection Status, Clock              -->
+        <!-- =================================================================== -->
+        <header class="bg-white border border-slate-200 rounded-xl px-5 py-4 flex flex-col md:flex-row justify-between items-center gap-4 shadow-sm hover:shadow transition-shadow">
+            <div class="flex items-center gap-3.5">
+                <div class="p-2.5 bg-blue-50 text-blue-600 border border-blue-200 rounded-lg shadow-sm">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"></path>
+                    </svg>
+                </div>
+                <div>
+                    <h1 class="text-lg md:text-xl font-bold tracking-tight text-slate-900 flex items-center gap-2">
+                        MT5 AI QUANTITATIVE BOT
+                        <span class="text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200">v2.5 Hybrid</span>
+                    </h1>
+                    <p class="text-xs text-slate-500 font-medium">Multi-Timeframe Scalper & Sniper Trigger Engine</p>
+                </div>
+            </div>
+
+            <!-- Single Connection Badge & Real-Time Clock -->
+            <div class="flex items-center gap-3 text-xs">
+                <!-- Single Unified Connection Badge -->
+                <div id="unifiedConnBadge" class="bg-emerald-50 text-emerald-700 border border-emerald-300 font-semibold px-3 py-1.5 rounded-full text-xs flex items-center gap-1.5 shadow-sm">
+                    <span id="unifiedConnDot" class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse-dot"></span>
+                    <span id="unifiedConnText">MT5 CONNECTED</span>
+                </div>
+
+                <!-- Clock Display -->
+                <div class="px-3.5 py-1.5 rounded-full bg-slate-100 border border-slate-200 text-slate-700 font-mono text-xs font-semibold shadow-inner">
+                    <span id="clockDisplay">--:--:-- WIB</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- =================================================================== -->
+        <!-- 2. ACCOUNT SUMMARY CARDS: 4-Columns Grid                           -->
+        <!-- =================================================================== -->
+        <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <!-- Balance Card -->
+            <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm hover:shadow-md transition-shadow flex flex-col justify-between">
+                <div class="flex items-center justify-between text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    <span>Saldo (Balance)</span>
+                    <span id="accountCurrency" class="px-2 py-0.5 rounded font-mono font-bold text-[11px] bg-slate-100 text-slate-700 border border-slate-300">USD</span>
+                </div>
+                <div class="mt-2 text-2xl font-extrabold text-slate-900 tracking-tight" id="valBalance">
+                    --
+                </div>
+                <div class="text-xs text-slate-400 mt-1">Saldo modal terealisasi</div>
+            </div>
+
+            <!-- Equity Card -->
+            <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm hover:shadow-md transition-shadow flex flex-col justify-between">
+                <div class="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    Ekuitas (Equity)
+                </div>
+                <div class="mt-2 text-2xl font-extrabold text-slate-900 tracking-tight" id="valEquity">
+                    --
+                </div>
+                <div class="text-xs text-slate-500 font-medium mt-1" id="valFreeMargin">Margin Bebas: --</div>
+            </div>
+
+            <!-- Daily Realized PnL Card -->
+            <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm hover:shadow-md transition-shadow flex flex-col justify-between">
+                <div class="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    Laba/Rugi Hari Ini
+                </div>
+                <div class="mt-2 text-2xl font-extrabold text-emerald-600 tracking-tight" id="valDailyPnl">
+                    Rp0
+                </div>
+                <div class="text-xs text-slate-400 mt-1">Akumulasi transaksi sejak 00:00</div>
+            </div>
+
+            <!-- Circuit Breaker Status Card -->
+            <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm hover:shadow-md transition-shadow flex flex-col justify-between">
+                <div class="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    Status Rem Darurat
+                </div>
+                <div class="mt-2 flex items-center">
+                    <span id="badgeCircuitBreaker" class="px-3 py-1 text-xs font-bold rounded-md bg-emerald-100 text-emerald-800 border border-emerald-300">
+                        AMAN &bull; TRADING ACTIVE
+                    </span>
+                </div>
+                <div class="text-xs text-slate-400 mt-1">Daily Drawdown Circuit Breaker</div>
+            </div>
+        </section>
+
+        <!-- =================================================================== -->
+        <!-- 3. AI COMPASS & MARKET PRICE SNAPSHOT                               -->
+        <!-- =================================================================== -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
+
+            <!-- AI Intelligence Compass (2 Kolom) -->
+            <div class="lg:col-span-2 bg-white border border-slate-200 rounded-xl p-5 shadow-sm hover:shadow-md transition-shadow space-y-4">
+                <div class="flex justify-between items-center border-b border-slate-100 pb-3">
+                    <h2 class="text-base font-bold text-slate-900 flex items-center gap-2">
+                        <svg class="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path>
+                        </svg>
+                        Kompas AI & Evaluasi Multi-Timeframe
+                    </h2>
+                    <div class="flex items-center gap-2">
+                        <span class="text-xs text-slate-500 font-medium">Sinyal Terakhir:</span>
+                        <span id="valLastSignal" class="px-3 py-1 text-xs font-bold rounded-md bg-slate-100 text-slate-700 border border-slate-300">HOLD</span>
+                    </div>
+                </div>
+
+                <!-- MTF Bias Badges & Indicators -->
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <!-- Primary TF Trend -->
+                    <div class="bg-slate-50 p-3 rounded-lg border border-slate-200">
+                        <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-500" id="labelPrimaryTf">Primary (M5)</div>
+                        <div class="mt-1 font-bold text-xs" id="valPrimaryTrend">
+                            <span class="px-2 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-300">NEUTRAL</span>
+                        </div>
+                    </div>
+
+                    <!-- Macro TF Trend -->
+                    <div class="bg-slate-50 p-3 rounded-lg border border-slate-200">
+                        <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-500" id="labelMacroTf">Macro (M15)</div>
+                        <div class="mt-1 font-bold text-xs" id="valMacroTrend">
+                            <span class="px-2 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-300">NEUTRAL</span>
+                        </div>
+                    </div>
+
+                    <!-- RSI Primary -->
+                    <div class="bg-slate-50 p-3 rounded-lg border border-slate-200 flex flex-col justify-between">
+                        <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-500 flex justify-between items-center">
+                            <span>RSI (14)</span>
+                            <span id="valRsiContext" class="text-[10px] font-normal text-slate-500 font-sans">Neutral</span>
+                        </div>
+                        <div class="mt-1 font-extrabold text-base font-mono text-slate-800" id="valRsi">50.00</div>
+                    </div>
+
+                    <!-- AI Confidence with Mini Progress Bar -->
+                    <div class="bg-slate-50 p-3 rounded-lg border border-slate-200 flex flex-col justify-between">
+                        <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-500 flex justify-between items-center">
+                            <span>Confidence</span>
+                            <span id="valConfidence" class="font-bold font-mono text-slate-800 text-xs">0.0%</span>
+                        </div>
+                        <div class="mt-2 w-full bg-slate-200 h-2 rounded-full overflow-hidden">
+                            <div id="confidenceBar" class="h-full bg-slate-400 transition-all duration-500 rounded-full" style="width: 0%;"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- AI Reasoning Summary Box -->
+                <div class="bg-amber-50/70 border-l-4 border-amber-500 text-slate-700 p-3.5 rounded-r-lg shadow-sm text-sm leading-relaxed">
+                    <div class="text-xs font-bold uppercase tracking-wider text-amber-800 mb-1 flex items-center gap-1.5">
+                        <svg class="w-4 h-4 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg>
+                        Analisis Alasan AI (Reasoning Summary):
+                    </div>
+                    <p class="text-xs sm:text-sm text-slate-800 font-medium" id="valAiReason">
+                        Menunggu candle tertutup pertama untuk memulai evaluasi...
+                    </p>
+                </div>
+            </div>
+
+            <!-- Market Price Snapshot (1 Kolom) -->
+            <div class="bg-white border border-slate-200 rounded-xl p-5 shadow-sm hover:shadow-md transition-shadow flex flex-col justify-between space-y-4">
+                <div class="border-b border-slate-100 pb-3 flex justify-between items-center">
+                    <h2 class="text-base font-bold text-slate-900 flex items-center gap-2">
+                        <svg class="w-5 h-5 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg>
+                        Kuotasi Pasar
+                    </h2>
+                    <span id="marketSymbolBadge" class="px-2.5 py-0.5 text-xs font-mono font-bold rounded bg-amber-50 text-amber-800 border border-amber-200">
+                        XAUUSD (M1)
+                    </span>
+                </div>
+
+                <!-- Bid & Ask Prices -->
+                <div class="grid grid-cols-2 gap-3 text-center">
+                    <div class="bg-slate-50 p-3 rounded-lg border border-slate-200">
+                        <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1">Bid (Sell)</div>
+                        <div class="text-lg md:text-xl font-mono font-bold text-rose-600" id="valBid">--</div>
+                    </div>
+                    <div class="bg-slate-50 p-3 rounded-lg border border-slate-200">
+                        <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1">Ask (Buy)</div>
+                        <div class="text-lg md:text-xl font-mono font-bold text-emerald-600" id="valAsk">--</div>
+                    </div>
+                </div>
+
+                <!-- Spread & Server Time -->
+                <div class="space-y-2 text-xs text-slate-600 bg-slate-50 p-3 rounded-lg border border-slate-200">
+                    <div class="flex justify-between">
+                        <span class="text-slate-500">Selisih Spread:</span>
+                        <span class="font-mono font-bold text-slate-800" id="valSpread">-- point</span>
+                    </div>
+                    <div class="flex justify-between">
+                        <span class="text-slate-500">Waktu Server MT5:</span>
+                        <span class="font-mono text-slate-700" id="valServerTime">--</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- =================================================================== -->
+        <!-- 4. POSITION & TRIGGER: Active Position & Sniper Trap Plan           -->
+        <!-- =================================================================== -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
+
+            <!-- Active Position Panel (2 Kolom) -->
+            <div class="lg:col-span-2 bg-white border border-slate-200 rounded-xl p-5 shadow-sm hover:shadow-md transition-shadow space-y-3">
+                <div class="flex justify-between items-center border-b border-slate-100 pb-3">
+                    <h2 class="text-base font-bold text-slate-900 flex items-center gap-2">
+                        <svg class="w-5 h-5 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg>
+                        Posisi Berjalan (Active Position)
+                    </h2>
+                    <span id="badgeSteppedStage" class="text-xs px-2.5 py-0.5 rounded font-mono font-semibold bg-slate-100 text-slate-700 border border-slate-300">
+                        NORMAL
+                    </span>
+                </div>
+
+                <!-- Flat Condition (Clean Minimalist) -->
+                <div id="positionFlatState" class="py-10 text-center text-slate-400 text-xs md:text-sm">
+                    <svg class="w-9 h-9 mx-auto text-slate-300 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20 12H4"></path>
+                    </svg>
+                    FLAT &bull; Tidak ada posisi terbuka saat ini
+                </div>
+
+                <!-- Active Condition Table -->
+                <div id="positionActiveState" class="hidden space-y-4">
+                    <!-- Floating PnL Highlight Banner -->
+                    <div class="p-3.5 rounded-lg border flex flex-col sm:flex-row justify-between items-center gap-2 bg-slate-50 border-slate-200">
+                        <div>
+                            <span class="text-xs font-semibold uppercase tracking-wider text-slate-500">Floating Profit / Loss:</span>
+                            <div class="text-2xl sm:text-3xl font-extrabold text-emerald-600 tracking-tight" id="posProfitBig">Rp0</div>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <span id="posTypeBadge" class="px-3 py-1 rounded font-bold text-xs bg-emerald-100 text-emerald-800 border border-emerald-300">BUY</span>
+                            <span class="px-2.5 py-1 rounded font-mono text-xs bg-slate-200 text-slate-700" id="posLotBadge">0.01 lot</span>
+                        </div>
+                    </div>
+
+                    <!-- Detailed Data Table -->
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left text-xs border border-slate-200 rounded-lg overflow-hidden">
+                            <thead class="text-[11px] uppercase bg-slate-100 text-slate-600 font-semibold border-b border-slate-200">
+                                <tr>
+                                    <th class="py-2.5 px-3">Tiket</th>
+                                    <th class="py-2.5 px-3">Harga Open</th>
+                                    <th class="py-2.5 px-3">Stop Loss</th>
+                                    <th class="py-2.5 px-3">Take Profit</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-100 font-mono text-slate-800">
+                                <tr>
+                                    <td class="py-3 px-3 font-bold" id="posTicket">--</td>
+                                    <td class="py-3 px-3" id="posOpen">--</td>
+                                    <td class="py-3 px-3 font-semibold text-rose-600" id="posSl">--</td>
+                                    <td class="py-3 px-3 font-semibold text-emerald-600" id="posTp">--</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Sniper Trigger Plan Panel (1 Kolom) -->
+            <div class="bg-white border border-slate-200 rounded-xl p-5 shadow-sm hover:shadow-md transition-shadow space-y-3 flex flex-col justify-between">
+                <div class="border-b border-slate-100 pb-3 flex justify-between items-center">
+                    <h2 class="text-base font-bold text-slate-900 flex items-center gap-2">
+                        <svg class="w-5 h-5 text-orange-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122"></path>
+                        </svg>
+                        Sniper Trigger Plan
+                    </h2>
+                    <span id="triggerStatusBadge" class="text-xs px-2 py-0.5 rounded font-mono font-bold bg-slate-100 text-slate-600 border border-slate-300">
+                        IDLE
+                    </span>
+                </div>
+
+                <!-- Idle State -->
+                <div id="triggerIdleState" class="py-8 text-center text-slate-400 text-xs">
+                    Menunggu setup konfirmasi M1...
+                </div>
+
+                <!-- Active Trigger State Card -->
+                <div id="triggerActiveState" class="hidden space-y-3 bg-orange-50/60 border border-orange-200 rounded-lg p-4 shadow-sm">
+                    <div class="flex justify-between items-center">
+                        <span id="trigActionBadge" class="px-2.5 py-0.5 rounded text-xs font-bold bg-amber-100 text-amber-800 border border-amber-300">
+                            [ BREAKOUT TRAP ]
+                        </span>
+                        <span class="text-xs font-mono font-bold text-orange-700" id="trigExpires">--s tersisa</span>
+                    </div>
+
+                    <!-- Countdown Progress Bar -->
+                    <div class="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden">
+                        <div id="trigProgressBar" class="h-full bg-orange-500 rounded-full transition-all duration-300" style="width: 100%;"></div>
+                    </div>
+
+                    <!-- Price Levels -->
+                    <div class="space-y-1.5 text-xs font-mono pt-1">
+                        <div class="flex justify-between items-center">
+                            <span class="text-slate-500 font-sans">Harga Pemicu:</span>
+                            <span class="text-base font-black text-slate-900" id="trigPrice">--</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-slate-500 font-sans">Target SL:</span>
+                            <span class="text-rose-600 font-semibold" id="trigSl">--</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-slate-500 font-sans">Target TP:</span>
+                            <span class="text-emerald-600 font-semibold" id="trigTp">--</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- =================================================================== -->
+        <!-- 5. CLEAN EVENT FEED: Max 8-10 Crucial Events                         -->
+        <!-- =================================================================== -->
+        <section class="bg-white border border-slate-200 rounded-xl p-5 shadow-sm hover:shadow-md transition-shadow space-y-3">
+            <div class="flex justify-between items-center border-b border-slate-100 pb-3">
+                <h2 class="text-base font-bold text-slate-900 flex items-center gap-2">
+                    <svg class="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10a2 2 0 012 2v1m2 13a2 2 0 01-2-2V7m2 13a2 2 0 002-2V9a2 2 0 00-2-2h-2m-4-3H9M7 16h6M7 8h6v4H7V8z"></path>
+                    </svg>
+                    Aktivitas & Log Event Krusial (Clean Event Feed)
+                </h2>
+                <span class="text-xs text-slate-400">Maksimal 10 event penting terakhir</span>
+            </div>
+
+            <div class="overflow-hidden border border-slate-200 rounded-lg">
+                <ul class="divide-y divide-slate-100 font-sans text-xs" id="eventList">
+                    <li class="p-3 text-slate-400 text-center">Menunggu event eksekusi...</li>
+                </ul>
+            </div>
+        </section>
+
+    </div>
+
+    <!-- =================================================================== -->
+    <!-- REAL-TIME JAVASCRIPT WEBSOCKET CLIENT                               -->
+    <!-- =================================================================== -->
+    <script>
+        // Jam Digital Lokal
+        function updateClock() {
+            const now = new Date();
+            const timeStr = now.toLocaleTimeString('id-ID', { hour12: false }) + ' WIB';
+            const clockEl = document.getElementById('clockDisplay');
+            if (clockEl) clockEl.textContent = timeStr;
+        }
+        setInterval(updateClock, 1000);
+        updateClock();
+
+        // WebSocket Client
+        let socket = null;
+        let wsConnected = false;
+        let mt5Connected = false;
+
+        function updateUnifiedConnectionStatus() {
+            const badge = document.getElementById('unifiedConnBadge');
+            const dot = document.getElementById('unifiedConnDot');
+            const text = document.getElementById('unifiedConnText');
+
+            if (wsConnected && mt5Connected) {
+                badge.className = 'bg-emerald-50 text-emerald-700 border border-emerald-300 font-semibold px-3 py-1.5 rounded-full text-xs flex items-center gap-1.5 shadow-sm';
+                dot.className = 'w-2 h-2 rounded-full bg-emerald-500 animate-pulse-dot';
+                text.textContent = 'MT5 CONNECTED';
+            } else {
+                badge.className = 'bg-rose-50 text-rose-700 border border-rose-300 font-semibold px-3 py-1.5 rounded-full text-xs flex items-center gap-1.5 shadow-sm';
+                dot.className = 'w-2 h-2 rounded-full bg-rose-500';
+                text.textContent = 'DISCONNECTED';
+            }
+        }
+
+        function connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws`;
+
+            socket = new WebSocket(wsUrl);
+
+            socket.onopen = function () {
+                wsConnected = true;
+                updateUnifiedConnectionStatus();
+            };
+
+            socket.onmessage = function (event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    renderDashboard(data);
+                } catch (err) {
+                    console.error("Gagal parsing JSON state:", err);
+                }
+            };
+
+            socket.onclose = function () {
+                wsConnected = false;
+                updateUnifiedConnectionStatus();
+                // Otomatis reconnect setiap 2 detik
+                setTimeout(connectWebSocket, 2000);
+            };
+
+            socket.onerror = function () {
+                socket.close();
+            };
+        }
+
+        // Render Dashboard State ke DOM
+        function renderDashboard(state) {
+            if (!state) return;
+
+            // 1. Account Summary
+            if (state.account) {
+                const acc = state.account;
+                const curr = acc.currency || 'USD';
+                document.getElementById('accountCurrency').textContent = curr;
+                document.getElementById('valBalance').textContent = formatCurrency(acc.balance, curr);
+                document.getElementById('valEquity').textContent = formatCurrency(acc.equity, curr);
+                document.getElementById('valFreeMargin').textContent = `Margin Bebas: ${formatCurrency(acc.margin_free, curr)}`;
+
+                const dailyPnlEl = document.getElementById('valDailyPnl');
+                const pnlVal = acc.daily_realized_pnl || 0;
+                dailyPnlEl.textContent = formatPnlIdr(pnlVal);
+                if (pnlVal > 0) {
+                    dailyPnlEl.className = 'mt-2 text-2xl font-extrabold text-emerald-600 tracking-tight';
+                } else if (pnlVal < 0) {
+                    dailyPnlEl.className = 'mt-2 text-2xl font-extrabold text-rose-600 tracking-tight';
+                } else {
+                    dailyPnlEl.className = 'mt-2 text-2xl font-extrabold text-slate-700 tracking-tight';
+                }
+
+                // Circuit Breaker Status
+                const badgeCb = document.getElementById('badgeCircuitBreaker');
+                if (acc.circuit_breaker_locked) {
+                    badgeCb.textContent = 'TERKUNCI (CIRCUIT BREAKER)';
+                    badgeCb.className = 'px-3 py-1 text-xs font-bold rounded-md bg-rose-100 text-rose-800 border border-rose-300';
+                } else {
+                    badgeCb.textContent = 'AMAN • TRADING ACTIVE';
+                    badgeCb.className = 'px-3 py-1 text-xs font-bold rounded-md bg-emerald-100 text-emerald-800 border border-emerald-300';
+                }
+            }
+
+            // 2. Market Snapshot
+            if (state.market) {
+                const mkt = state.market;
+                mt5Connected = !!mkt.is_connected;
+                updateUnifiedConnectionStatus();
+
+                document.getElementById('marketSymbolBadge').textContent = `${mkt.symbol || 'XAUUSD'} (${mkt.timeframe || 'M1'})`;
+                document.getElementById('valBid').textContent = mkt.current_bid ? Number(mkt.current_bid).toFixed(2) : '--';
+                document.getElementById('valAsk').textContent = mkt.current_ask ? Number(mkt.current_ask).toFixed(2) : '--';
+                document.getElementById('valSpread').textContent = `${mkt.spread_points || 0} point`;
+                document.getElementById('valServerTime').textContent = mkt.server_time || '--';
+            }
+
+            // 3. AI Intelligence Compass
+            if (state.ai_status) {
+                const ai = state.ai_status;
+                const pTf = ai.primary_tf || 'M5';
+                const mTf = ai.macro_tf || 'M15';
+
+                document.getElementById('labelPrimaryTf').textContent = `Primary (${pTf})`;
+                document.getElementById('labelMacroTf').textContent = `Macro (${mTf})`;
+
+                renderTrendBadge('valPrimaryTrend', ai.primary_trend);
+                renderTrendBadge('valMacroTrend', ai.macro_trend);
+
+                // RSI & Context
+                const rsiVal = Number(ai.rsi || 50);
+                document.getElementById('valRsi').textContent = rsiVal.toFixed(2);
+                const rsiCtx = document.getElementById('valRsiContext');
+                if (rsiVal >= 70) {
+                    rsiCtx.textContent = 'Overbought';
+                    rsiCtx.className = 'text-[10px] font-bold text-rose-600 font-sans';
+                } else if (rsiVal <= 30) {
+                    rsiCtx.textContent = 'Oversold';
+                    rsiCtx.className = 'text-[10px] font-bold text-emerald-600 font-sans';
+                } else if (rsiVal > 50) {
+                    rsiCtx.textContent = 'Bullish';
+                    rsiCtx.className = 'text-[10px] font-semibold text-emerald-600 font-sans';
+                } else {
+                    rsiCtx.textContent = 'Bearish';
+                    rsiCtx.className = 'text-[10px] font-semibold text-rose-600 font-sans';
+                }
+
+                // Confidence & Mini Progress Bar
+                const confPercent = Math.min(100, Math.max(0, Number(ai.confidence || 0) * 100));
+                document.getElementById('valConfidence').textContent = `${confPercent.toFixed(1)}%`;
+                const confBar = document.getElementById('confidenceBar');
+                confBar.style.width = `${confPercent}%`;
+                if (confPercent >= 85) {
+                    confBar.className = 'h-full bg-emerald-500 rounded-full transition-all duration-500';
+                } else if (confPercent >= 70) {
+                    confBar.className = 'h-full bg-amber-500 rounded-full transition-all duration-500';
+                } else {
+                    confBar.className = 'h-full bg-rose-500 rounded-full transition-all duration-500';
+                }
+
+                // AI Reason
+                document.getElementById('valAiReason').textContent = ai.reason_summary || 'Menunggu candle M1...';
+
+                // Last Signal Badge
+                const lastSigEl = document.getElementById('valLastSignal');
+                const sig = (ai.last_signal || 'HOLD').toUpperCase();
+                lastSigEl.textContent = sig;
+
+                if (sig.includes('BUY')) {
+                    lastSigEl.className = 'px-3 py-1 text-xs font-bold rounded-md bg-emerald-100 text-emerald-800 border border-emerald-300 animate-pulse';
+                } else if (sig.includes('SELL')) {
+                    lastSigEl.className = 'px-3 py-1 text-xs font-bold rounded-md bg-rose-100 text-rose-800 border border-rose-300 animate-pulse';
+                } else if (sig === 'HOLD') {
+                    lastSigEl.className = 'px-3 py-1 text-xs font-medium rounded-md bg-slate-100 text-slate-700 border border-slate-300';
+                } else {
+                    lastSigEl.className = 'px-3 py-1 text-xs font-bold rounded-md bg-blue-100 text-blue-800 border border-blue-300';
+                }
+            }
+
+            // 4. Active Position
+            if (state.active_position) {
+                const pos = state.active_position;
+                const flatEl = document.getElementById('positionFlatState');
+                const actEl = document.getElementById('positionActiveState');
+                const stageBadge = document.getElementById('badgeSteppedStage');
+
+                if (pos.has_position) {
+                    flatEl.classList.add('hidden');
+                    actEl.classList.remove('hidden');
+
+                    document.getElementById('posTicket').textContent = pos.ticket || '--';
+                    const pType = (pos.type || 'BUY').toUpperCase();
+                    const posTypeBadge = document.getElementById('posTypeBadge');
+                    posTypeBadge.textContent = pType;
+                    posTypeBadge.className = pType === 'BUY'
+                        ? 'px-3 py-1 rounded font-bold text-xs bg-emerald-100 text-emerald-800 border border-emerald-300'
+                        : 'px-3 py-1 rounded font-bold text-xs bg-rose-100 text-rose-800 border border-rose-300';
+
+                    document.getElementById('posLotBadge').textContent = `${Number(pos.lot || 0.01).toFixed(2)} lot`;
+                    document.getElementById('posOpen').textContent = pos.open_price ? Number(pos.open_price).toFixed(2) : '--';
+                    document.getElementById('posSl').textContent = pos.current_sl ? Number(pos.current_sl).toFixed(2) : '--';
+                    document.getElementById('posTp').textContent = pos.current_tp ? Number(pos.current_tp).toFixed(2) : '--';
+
+                    const floatPnl = Number(pos.floating_pnl_idr || 0);
+                    const pnlBigEl = document.getElementById('posProfitBig');
+                    pnlBigEl.textContent = formatPnlIdr(floatPnl);
+                    pnlBigEl.className = floatPnl >= 0 
+                        ? 'text-2xl sm:text-3xl font-extrabold text-emerald-600 tracking-tight'
+                        : 'text-2xl sm:text-3xl font-extrabold text-rose-600 tracking-tight';
+
+                    // Stepped Stage
+                    const stage = (pos.stepped_stage || 'NORMAL').toUpperCase();
+                    if (stage.includes('EXTENDER')) {
+                        stageBadge.textContent = 'STAGE 3: TP EXTENDED';
+                        stageBadge.className = 'text-xs px-2.5 py-0.5 rounded font-mono font-bold bg-purple-100 text-purple-800 border border-purple-300';
+                    } else if (stage.includes('STAGNANT')) {
+                        stageBadge.textContent = 'STAGE 2: STAGNANT LOCK';
+                        stageBadge.className = 'text-xs px-2.5 py-0.5 rounded font-mono font-bold bg-blue-100 text-blue-800 border border-blue-300';
+                    } else if (stage.includes('BEP')) {
+                        stageBadge.textContent = 'STAGE 1: BEP LOCKED';
+                        stageBadge.className = 'text-xs px-2.5 py-0.5 rounded font-mono font-bold bg-amber-100 text-amber-800 border border-amber-300';
+                    } else {
+                        stageBadge.textContent = 'NORMAL';
+                        stageBadge.className = 'text-xs px-2.5 py-0.5 rounded font-mono font-semibold bg-slate-100 text-slate-700 border border-slate-300';
+                    }
+                } else {
+                    flatEl.classList.remove('hidden');
+                    actEl.classList.add('hidden');
+                    stageBadge.textContent = 'NORMAL';
+                    stageBadge.className = 'text-xs px-2.5 py-0.5 rounded font-mono font-semibold bg-slate-100 text-slate-700 border border-slate-300';
+                }
+            }
+
+            // 5. Sniper Trigger Plan
+            if (state.active_trigger) {
+                const trig = state.active_trigger;
+                const idleEl = document.getElementById('triggerIdleState');
+                const actEl = document.getElementById('triggerActiveState');
+                const badgeEl = document.getElementById('triggerStatusBadge');
+
+                if (trig.has_plan) {
+                    idleEl.classList.add('hidden');
+                    actEl.classList.remove('hidden');
+                    badgeEl.textContent = 'SNIPER ACTIVE';
+                    badgeEl.className = 'text-xs px-2 py-0.5 rounded font-mono font-bold bg-orange-100 text-orange-800 border border-orange-300';
+
+                    const act = trig.action || 'PENDING_BUY';
+                    const actBadge = document.getElementById('trigActionBadge');
+                    if (act.includes('BUY')) {
+                        actBadge.textContent = '[ BREAKOUT BUY TRAP ]';
+                        actBadge.className = 'px-2.5 py-0.5 rounded text-xs font-bold bg-sky-100 text-sky-800 border border-sky-300';
+                    } else {
+                        actBadge.textContent = '[ BREAKDOWN SELL TRAP ]';
+                        actBadge.className = 'px-2.5 py-0.5 rounded text-xs font-bold bg-amber-100 text-amber-800 border border-amber-300';
+                    }
+
+                    const remSec = Math.max(0, trig.expires_in_sec || 0);
+                    document.getElementById('trigExpires').textContent = `${remSec}s tersisa`;
+                    
+                    // Countdown bar (asumsi 60s max)
+                    const pct = Math.min(100, Math.max(0, (remSec / 60) * 100));
+                    document.getElementById('trigProgressBar').style.width = `${pct}%`;
+
+                    document.getElementById('trigPrice').textContent = Number(trig.trigger_price || 0).toFixed(2);
+                    document.getElementById('trigSl').textContent = Number(trig.planned_sl || 0).toFixed(2);
+                    document.getElementById('trigTp').textContent = Number(trig.planned_tp || 0).toFixed(2);
+                } else {
+                    idleEl.classList.remove('hidden');
+                    actEl.classList.add('hidden');
+                    badgeEl.textContent = 'IDLE';
+                    badgeEl.className = 'text-xs px-2 py-0.5 rounded font-mono font-bold bg-slate-100 text-slate-600 border border-slate-300';
+                }
+            }
+
+            // 6. Clean Event Feed (8-10 items)
+            if (state.recent_events && Array.isArray(state.recent_events)) {
+                const listEl = document.getElementById('eventList');
+                if (state.recent_events.length === 0) {
+                    listEl.innerHTML = `<li class="p-3 text-slate-400 text-center">Belum ada event tercatat.</li>`;
+                } else {
+                    listEl.innerHTML = state.recent_events.slice(0, 10).map(ev => {
+                        let badgeClass = 'bg-slate-100 text-slate-700 border-slate-200';
+                        const t = (ev.type || 'INFO').toUpperCase();
+                        if (t === 'ENTRY' || t === 'ORDER') {
+                            badgeClass = 'bg-blue-100 text-blue-800 border-blue-200';
+                        } else if (t === 'PROFIT' || t === 'BEP' || t === 'TP' || t === 'SUCCESS') {
+                            badgeClass = 'bg-emerald-100 text-emerald-800 border-emerald-200';
+                        } else if (t === 'SL' || t === 'LOSS' || t === 'ERROR') {
+                            badgeClass = 'bg-rose-100 text-rose-800 border-rose-200';
+                        } else if (t === 'WARNING' || t === 'CB' || t === 'SYSTEM') {
+                            badgeClass = 'bg-amber-100 text-amber-800 border-amber-200';
+                        }
+
+                        return `
+                            <li class="p-2.5 text-xs sm:text-sm hover:bg-slate-50 transition-colors flex items-center justify-between gap-3">
+                                <div class="flex items-center gap-2.5 overflow-hidden">
+                                    <span class="px-2 py-0.5 rounded text-[10px] font-bold border ${badgeClass} shrink-0">[${t}]</span>
+                                    <span class="text-slate-700 font-medium truncate">${escapeHtml(ev.message)}</span>
+                                </div>
+                                <span class="text-slate-400 text-[11px] font-mono shrink-0">${ev.time}</span>
+                            </li>
+                        `;
+                    }).join('');
+                }
+            }
+        }
+
+        function renderTrendBadge(elementId, trend) {
+            const el = document.getElementById(elementId);
+            if (!el) return;
+            const t = (trend || 'NEUTRAL').toUpperCase();
+            if (t === 'BULLISH') {
+                el.innerHTML = `<span class="px-2.5 py-1 rounded-md text-xs font-semibold bg-emerald-100 text-emerald-800 border border-emerald-300">BULLISH</span>`;
+            } else if (t === 'BEARISH') {
+                el.innerHTML = `<span class="px-2.5 py-1 rounded-md text-xs font-semibold bg-rose-100 text-rose-800 border border-rose-300">BEARISH</span>`;
+            } else {
+                el.innerHTML = `<span class="px-2.5 py-1 rounded-md text-xs font-semibold bg-slate-100 text-slate-700 border border-slate-300">NEUTRAL</span>`;
+            }
+        }
+
+        function formatCurrency(val, curr) {
+            const num = Number(val || 0);
+            if (curr === 'IDR') {
+                return `Rp${num.toLocaleString('id-ID', { maximumFractionDigits: 0 })}`;
+            }
+            return `$${num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        }
+
+        function formatPnlIdr(val) {
+            const num = Number(val || 0);
+            const prefix = num >= 0 ? '+Rp' : '-Rp';
+            return `${prefix}${Math.abs(num).toLocaleString('id-ID', { maximumFractionDigits: 0 })}`;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Jalankan koneksi WebSocket
+        connectWebSocket();
+    </script>
+</body>
+</html>

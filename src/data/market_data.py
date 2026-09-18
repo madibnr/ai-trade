@@ -3,6 +3,33 @@ import pandas as pd
 from utils.logger import logger
 from src.strategy.base import calculate_indicators
 
+TIMEFRAME_HIERARCHY = {
+    "M1":  {"primary": "M5",  "macro": "M15"},
+    "M5":  {"primary": "M15", "macro": "M30"},
+    "M15": {"primary": "M30", "macro": "H1"},
+    "M30": {"primary": "H1",  "macro": "H4"},
+    "H1":  {"primary": "H4",  "macro": "D1"},
+}
+
+TF_CONST_MAP = {
+    "M1": mt5.TIMEFRAME_M1,
+    "M5": mt5.TIMEFRAME_M5,
+    "M15": mt5.TIMEFRAME_M15,
+    "M30": getattr(mt5, "TIMEFRAME_M30", 30),
+    "H1": mt5.TIMEFRAME_H1,
+    "H4": mt5.TIMEFRAME_H4,
+    "D1": mt5.TIMEFRAME_D1,
+}
+
+def get_adaptive_timeframes(base_tf: str) -> dict:
+    """Mengembalikan dictionary berisi base, primary, dan macro timeframe."""
+    mapping = TIMEFRAME_HIERARCHY.get(base_tf.upper(), {"primary": "M5", "macro": "M15"})
+    return {
+        "base": base_tf.upper(),
+        "primary": mapping["primary"],
+        "macro": mapping["macro"]
+    }
+
 def get_symbol_info(symbol: str):
     """
     Get specification and status of a symbol from MT5.
@@ -114,31 +141,45 @@ def is_market_open(symbol: str) -> bool:
         return False
     return True
 
-def get_multi_timeframe_data(symbol: str) -> dict:
+def get_multi_timeframe_data(symbol: str, base_tf: str = None) -> dict:
     """
     Menarik data candle dan menghitung indikator teknikal (EMA 9, EMA 21, RSI 14, ATR 14)
-    untuk 3 timeframe sekaligus: M15 (Makro), M5 (Struktur), dan M1 (Eksekusi).
+    secara adaptif untuk 3 timeframe berdasarkan hierarki konfigurasi:
+    - Base Timeframe: pemicu eksekusi dan SL ATR (misal M1)
+    - Primary Timeframe: pengambil keputusan utama (misal M5)
+    - Macro Timeframe: referensi struktural mayor (misal M15)
     Menggunakan presisi desimal dinamis (digits) sesuai spesifikasi instrumen MT5.
     """
+    if base_tf is None:
+        base_tf = getattr(settings, "TIMEFRAME_STR", "M1")
+
     metadata = get_symbol_metadata(symbol)
     digits = metadata["digits"]
 
+    hierarchy = get_adaptive_timeframes(base_tf)
+    base_str = hierarchy["base"]
+    primary_str = hierarchy["primary"]
+    macro_str = hierarchy["macro"]
+
     tf_configs = {
-        "m15": mt5.TIMEFRAME_M15,
-        "m5": mt5.TIMEFRAME_M5,
-        "m1": mt5.TIMEFRAME_M1
+        "base": (base_str, TF_CONST_MAP.get(base_str, mt5.TIMEFRAME_M1)),
+        "primary": (primary_str, TF_CONST_MAP.get(primary_str, mt5.TIMEFRAME_M5)),
+        "macro": (macro_str, TF_CONST_MAP.get(macro_str, mt5.TIMEFRAME_M15))
     }
 
     mtf_payload = {
-        "metadata": metadata
+        "metadata": metadata,
+        "hierarchy": hierarchy
     }
 
-    for tf_key, tf_const in tf_configs.items():
+    for role, (tf_name, tf_const) in tf_configs.items():
         # Ambil 60 candle untuk pemanasan indikator yang akurat
         df = get_historical_data(symbol, tf_const, count=60)
         if df.empty or len(df) < 25:
-            logger.warning(f"[WARNING] Data {tf_key.upper()} tidak cukup untuk kalkulasi indikator.")
-            mtf_payload[tf_key] = {
+            logger.warning(f"[WARNING] Data {tf_name} ({role}) tidak cukup untuk kalkulasi indikator.")
+            role_data = {
+                "timeframe": tf_name,
+                "role": role,
                 "trend": "NEUTRAL",
                 "ema9": 0.0,
                 "ema21": 0.0,
@@ -150,18 +191,21 @@ def get_multi_timeframe_data(symbol: str) -> dict:
                 "timestamp": 0,
                 "recent_candles": []
             }
+            mtf_payload[role] = role_data
+            mtf_payload[tf_name.lower()] = role_data
             continue
 
         df = calculate_indicators(df)
-        latest = df.iloc[-1]
+        # Ambil lilin terakhir yang SUDAH TERTUTUP PENUH (Index -2) agar indikator tidak repainting
+        closed_bar = df.iloc[-2] if len(df) >= 2 else df.iloc[-1]
 
-        ema9 = round(float(latest['ema_9']), digits)
-        ema21 = round(float(latest['ema_21']), digits)
-        rsi = round(float(latest['rsi_14']), 2)
-        atr = round(float(latest['atr_14']), digits)
-        close_price = round(float(latest['close']), digits)
+        ema9 = round(float(closed_bar['ema_9']), digits)
+        ema21 = round(float(closed_bar['ema_21']), digits)
+        rsi = round(float(closed_bar['rsi_14']), 2)
+        atr = round(float(closed_bar['atr_14']), digits)
+        close_price = round(float(closed_bar['close']), digits)
 
-        # Klasifikasi tren terstruktur
+        # Klasifikasi tren terstruktur berbasis lilin tertutup terkonfirmasi
         if close_price > ema21 and ema9 > ema21 and rsi >= 50:
             trend = "BULLISH"
         elif close_price < ema21 and ema9 < ema21 and rsi <= 50:
@@ -181,7 +225,9 @@ def get_multi_timeframe_data(symbol: str) -> dict:
                 "volume": int(row.get('tick_volume', 0))
             })
 
-        mtf_payload[tf_key] = {
+        role_data = {
+            "timeframe": tf_name,
+            "role": role,
             "trend": trend,
             "ema9": ema9,
             "ema21": ema21,
@@ -189,9 +235,11 @@ def get_multi_timeframe_data(symbol: str) -> dict:
             "atr": atr,
             "close": close_price,
             "latest_close": close_price,
-            "latest_time": str(df.index[-1]),
-            "timestamp": int(df.index[-1].timestamp()),
+            "latest_time": str(df.index[-2] if len(df) >= 2 else df.index[-1]),
+            "timestamp": int((df.index[-2] if len(df) >= 2 else df.index[-1]).timestamp()),
             "recent_candles": recent_candles
         }
+        mtf_payload[role] = role_data
+        mtf_payload[tf_name.lower()] = role_data
 
     return mtf_payload
